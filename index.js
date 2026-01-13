@@ -83,7 +83,13 @@ const defaultSettings = {
     steps: 20,
     cfg: 7.0,
     denoise: 0.5,
-    clipSkip: 1
+    clipSkip: 1,
+    profileStrategy: "current",
+    promptStyle: "standard",      
+    promptPerspective: "scene",   
+    promptExtra: "",              
+    connectionProfile: "",
+    savedWorkflowStates: {}  
 };
 
 async function loadSettings() {
@@ -101,6 +107,10 @@ async function loadSettings() {
     $("#kazuma_height").val(extension_settings[extensionName].imgHeight);
     $("#kazuma_auto_enable").prop("checked", extension_settings[extensionName].autoGenEnabled);
     $("#kazuma_auto_freq").val(extension_settings[extensionName].autoGenFreq);
+	
+    $("#kazuma_prompt_style").val(extension_settings[extensionName].promptStyle || "standard");
+    $("#kazuma_prompt_persp").val(extension_settings[extensionName].promptPerspective || "scene");
+    $("#kazuma_prompt_extra").val(extension_settings[extensionName].promptExtra || "");
 
     $("#kazuma_lora_wt").val(extension_settings[extensionName].selectedLoraWt);
     $("#kazuma_lora_wt_display").text(extension_settings[extensionName].selectedLoraWt);
@@ -114,6 +124,9 @@ async function loadSettings() {
     $("#kazuma_negative").val(extension_settings[extensionName].customNegative);
     $("#kazuma_seed").val(extension_settings[extensionName].customSeed);
     $("#kazuma_compress").prop("checked", extension_settings[extensionName].compressImages);
+	
+	$("#kazuma_profile_strategy").val(extension_settings[extensionName].profileStrategy || "current");
+toggleProfileVisibility();
 
     updateSliderInput('kazuma_steps', 'kazuma_steps_val', extension_settings[extensionName].steps);
     updateSliderInput('kazuma_cfg', 'kazuma_cfg_val', extension_settings[extensionName].cfg);
@@ -124,6 +137,20 @@ async function loadSettings() {
     populateProfiles();
     populateWorkflows();
     await fetchComfyLists();
+}
+
+function toggleProfileVisibility() {
+    const strategy = extension_settings[extensionName].profileStrategy;
+
+    // Always show the builder now!
+    $("#kazuma_prompt_builder").show();
+
+    // Only toggle the preset selector
+    if (strategy === "specific") {
+        $("#kazuma_profile").show();
+    } else {
+        $("#kazuma_profile").hide();
+    }
 }
 
 function updateSliderInput(sliderId, numberId, value) {
@@ -209,12 +236,12 @@ async function onComfyDeleteWorkflowClick() {
     } catch (e) { toastr.error(e.message); }
 }
 
-// --- UPDATED EDITOR LOGIC (Fix Save) ---
+/* --- WORKFLOW STUDIO (No Auto-Copy) --- */
 async function onComfyOpenWorkflowEditorClick() {
     const name = extension_settings[extensionName].currentWorkflowName;
     if (!name) return toastr.warning("No workflow selected");
 
-    let workflowContent = "";
+    let workflowContent = "{}";
     try {
         const res = await fetch('/api/sd/comfy/workflow', {
             method: 'POST', headers: getRequestHeaders(),
@@ -228,96 +255,112 @@ async function onComfyOpenWorkflowEditorClick() {
             }
             workflowContent = JSON.stringify(jsonObj, null, 4);
         }
-    } catch (e) { return toastr.error("Failed to load file"); }
+    } catch (e) { toastr.error("Failed to load file. Starting empty."); }
 
-    const editorHtml = `
-        <div style="display: flex; height: 75vh; width: 100%; gap: 15px;">
-            <div style="flex-grow: 1; display: flex; flex-direction: column; min-width: 0;">
-                <h3 style="margin: 0 0 5px 0;">${name} (JSON)</h3>
-                <textarea id="kazuma_editor_text" class="text_pole" style="flex: 1; font-family: monospace; white-space: pre; resize: none; font-size: 13px; padding: 10px;"></textarea>
-            </div>
-            <div style="width: 300px; flex-shrink: 0; display: flex; flex-direction: column; border-left: 1px solid var(--smart-border-color); padding-left: 10px;">
-                <h3 style="margin: 0 0 5px 0;">Reference</h3>
-                <small style="opacity:0.7; margin-bottom: 10px;">Valid placeholders:</small>
-                <div id="kazuma_editor_list" style="overflow-y: auto; flex: 1; padding-right: 5px;">
-                    <!-- Items go here -->
+    // --- UI BUILDER ---
+    const $container = $(`
+        <div style="display: flex; flex-direction: column; width: 100%; gap: 10px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--smart-border-color); padding-bottom:10px;">
+                <h3 style="margin:0;">${name}</h3>
+                <div style="display:flex; gap:5px;">
+                    <button class="menu_button wf-format" title="Beautify JSON"><i class="fa-solid fa-align-left"></i> Format</button>
+                    <button class="menu_button wf-import" title="Upload .json file"><i class="fa-solid fa-upload"></i> Import</button>
+                    <button class="menu_button wf-export" title="Download .json file"><i class="fa-solid fa-download"></i> Export</button>
+                    <input type="file" class="wf-file-input" accept=".json" style="display:none;" />
                 </div>
             </div>
+
+            <div style="display: flex; gap: 15px;">
+                <!-- Fixed Height -->
+                <textarea class="text_pole wf-textarea" spellcheck="false"
+                    style="flex: 1; min-height: 600px; height: 600px; font-family: 'Consolas', 'Monaco', monospace; white-space: pre; resize: none; font-size: 13px; padding: 10px; line-height: 1.4;"></textarea>
+
+                <div style="width: 250px; flex-shrink: 0; display: flex; flex-direction: column; border-left: 1px solid var(--smart-border-color); padding-left: 10px; max-height: 600px;">
+                    <h4 style="margin: 0 0 10px 0; opacity:0.8;">Placeholders</h4>
+                    <!-- Removed helper text -->
+                    <div class="wf-list" style="overflow-y: auto; flex: 1; padding-right: 5px;"></div>
+                </div>
+            </div>
+            <small style="opacity:0.5;">Tip: Ensure your JSON is valid before saving.</small>
         </div>
-    `;
+    `);
 
-    // 1. Variable to hold data before popup closes
-    let contentToSave = null;
+    // --- LOGIC ---
+    const $textarea = $container.find('.wf-textarea');
+    const $list = $container.find('.wf-list');
+    const $fileInput = $container.find('.wf-file-input');
 
-    const saveValue = () => {
-        contentToSave = $('#kazuma_editor_text').val();
-        try {
-            JSON.parse(contentToSave);
-            return true; // Allow close
-        } catch (e) {
-            toastr.error("Invalid JSON");
-            return false; // Block close
-        }
+    $textarea.val(workflowContent);
+
+    // Sidebar Items
+    KAZUMA_PLACEHOLDERS.forEach(item => {
+        const $itemDiv = $('<div></div>')
+            .css({
+                'padding': '8px 6px',
+                'margin-bottom': '6px',
+                'background-color': 'rgba(0,0,0,0.1)',
+                'border-radius': '4px',
+                'font-family': 'monospace',
+                'font-size': '12px',
+                'border': '1px solid transparent',
+                'transition': 'all 0.2s',
+                // Enabled text selection, default cursor
+                'cursor': 'text'
+            });
+
+        const $keySpan = $('<span></span>').text(item.key).css({'font-weight': 'bold', 'color': 'var(--smart-text-color)'});
+        const $descSpan = $('<div></div>').text(item.desc).css({ 'font-size': '11px', 'opacity': '0.7', 'margin-top': '2px', 'font-family': 'sans-serif' });
+        $itemDiv.append($keySpan).append($descSpan);
+
+        // NO CLICK EVENT
+
+        $list.append($itemDiv);
+    });
+
+    // Highlighting Logic
+    const updateHighlights = () => {
+        const txt = $textarea.val();
+        $list.children().each(function() {
+            const cleanKey = $(this).find('span').first().text().replace(/"/g, '');
+            if (txt.includes(cleanKey)) $(this).css({'border': '1px solid #4caf50', 'background-color': 'rgba(76, 175, 80, 0.1)'});
+            else $(this).css({'border': '1px solid transparent', 'background-color': 'rgba(0,0,0,0.1)'});
+        });
+    };
+    $textarea.on('input', updateHighlights);
+    setTimeout(updateHighlights, 100);
+
+    $container.find('.wf-format').on('click', () => {
+        try { $textarea.val(JSON.stringify(JSON.parse($textarea.val()), null, 4)); toastr.success("Formatted"); } catch(e) { toastr.warning("Invalid JSON"); }
+    });
+    $container.find('.wf-import').on('click', () => $fileInput.click());
+    $fileInput.on('change', (e) => {
+        if (!e.target.files[0]) return;
+        const r = new FileReader(); r.onload = (ev) => { $textarea.val(ev.target.result); updateHighlights(); toastr.success("Imported"); };
+        r.readAsText(e.target.files[0]); $fileInput.val('');
+    });
+    $container.find('.wf-export').on('click', () => {
+        try { JSON.parse($textarea.val()); const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([$textarea.val()], {type:"application/json"})); a.download = name; a.click(); } catch(e) { toastr.warning("Invalid content"); }
+    });
+
+    const onClosing = () => {
+        const content = $textarea.val();
+        try { JSON.parse(content); return content; } catch (e) { toastr.error("Invalid JSON"); return false; }
     };
 
-    const popup = new Popup($(editorHtml), POPUP_TYPE.CONFIRM, '', { okButton: 'Save', cancelButton: 'Cancel', wide: true, large: true, onClosing: saveValue });
+    const popup = new Popup($container, POPUP_TYPE.CONFIRM, '', { okButton: 'Save Changes', cancelButton: 'Cancel', wide: true, large: true, onClosing: onClosing });
 
-    popup.show().then(async (result) => {
-        // 2. Use the captured variable, NOT the jQuery selector (which might be empty/gone now)
-        if (result && contentToSave) {
+    await popup.show().then(async (result) => {
+        if (result && typeof result === 'string') {
             try {
-                const minified = JSON.stringify(JSON.parse(contentToSave));
                 const res = await fetch('/api/sd/comfy/save-workflow', {
                     method: 'POST', headers: getRequestHeaders(),
-                    body: JSON.stringify({ file_name: name, workflow: minified })
+                    body: JSON.stringify({ file_name: name, workflow: JSON.stringify(JSON.parse(result)) })
                 });
                 if (!res.ok) throw new Error(await res.text());
                 toastr.success("Saved!");
-            } catch (e) { toastr.error("Save Failed: " + e.message); }
+            } catch (e) { toastr.error(e.message); }
         }
     });
-
-    setTimeout(() => {
-        const textArea = $('#kazuma_editor_text');
-        textArea.val(workflowContent);
-
-        const list = $('#kazuma_editor_list');
-        KAZUMA_PLACEHOLDERS.forEach(item => {
-            const div = $('<div></div>')
-                .css({
-                    'padding': '6px 4px',
-                    'margin-bottom': '4px',
-                    'border-bottom': '1px solid rgba(128,128,128,0.1)',
-                    'font-family': 'monospace',
-                    'font-size': '13px',
-                    'display': 'flex',
-                    'flex-direction': 'column'
-                });
-
-            const keySpan = $('<span></span>').text(item.key).css('font-weight', 'bold');
-            const descSpan = $('<span></span>').text(item.desc).css({ 'font-size': '11px', 'opacity': '0.7', 'margin-top': '2px', 'font-family': 'sans-serif' });
-
-            div.append(keySpan).append(descSpan);
-            list.append(div);
-        });
-
-        const highlight = () => {
-            const txt = textArea.val();
-            list.children().each(function() {
-                const keyText = $(this).find('span').first().text();
-                // Simple string check
-                if (txt.includes(keyText.replace(/"/g, ''))) { // flexible match
-                     $(this).css({'border-left': '4px solid #4caf50', 'color': '#4caf50'});
-                } else if (txt.includes(keyText)) {
-                     $(this).css({'border-left': '4px solid #4caf50', 'color': '#4caf50'});
-                } else {
-                    $(this).css({'border-left': '1px solid transparent', 'color': 'var(--smart-text-color)'});
-                }
-            });
-        };
-        textArea.on('input', highlight);
-        highlight();
-    }, 50);
 }
 
 
@@ -377,40 +420,93 @@ async function onTestConnection() {
     } catch (error) { toastr.error(`Connection failed: ${error.message}`, "Image Gen Kazuma"); }
 }
 
-// --- GENERATION HANDLERS ---
+/* --- UPDATED GENERATION LOGIC --- */
 async function onGeneratePrompt() {
     if (!extension_settings[extensionName].enabled) return;
     const context = getContext();
     if (!context.chat || context.chat.length === 0) return toastr.warning("No chat history.");
 
-    const requestedProfile = extension_settings[extensionName].connectionProfile;
+    const strategy = extension_settings[extensionName].profileStrategy || "current";
+    const requestProfile = extension_settings[extensionName].connectionProfile;
     const targetDropdown = $("#settings_preset_openai");
     const originalProfile = targetDropdown.val();
     let didSwitch = false;
 
-    if (requestedProfile && requestedProfile !== originalProfile && requestedProfile !== "") {
+    if (strategy === "specific" && requestProfile && requestProfile !== originalProfile && requestProfile !== "") {
         toastr.info(`Switching presets...`);
-        targetDropdown.val(requestedProfile).trigger("change");
+        targetDropdown.val(requestProfile).trigger("change");
         await new Promise(r => setTimeout(r, 1000));
         didSwitch = true;
     }
 
+    // [START PROGRESS]
+    showKazumaProgress("Generating Prompt...");
+
     try {
         toastr.info("Visualizing...", "Image Gen Kazuma");
         const lastMessage = context.chat[context.chat.length - 1].mes;
-        const promptRequest = `Describe the following scene as a keyword-heavy image prompt. Scene: "${lastMessage}"`;
-        const generatedText = await generateQuietPrompt(promptRequest, true);
+        const s = extension_settings[extensionName];
+
+        const style = s.promptStyle || "standard";
+        const persp = s.promptPerspective || "scene";
+        const extra = s.promptExtra ? `, ${s.promptExtra}` : "";
+
+        let styleInst = "", perspInst = "";
+        if (style === "illustrious") styleInst = "Use Booru-style tags (e.g., 1girl, solo, blue hair). Focus on anime aesthetics.";
+        else if (style === "sdxl") styleInst = "Use natural language sentences. Focus on photorealism and detailed textures.";
+        else styleInst = "Use a list of detailed keywords/descriptors.";
+
+        if (persp === "pov") perspInst = "Describe the scene from a First Person (POV) perspective, looking at the character.";
+        else if (persp === "character") perspInst = "Focus intensely on the character's appearance and expression, ignoring background details.";
+        else perspInst = "Describe the entire environment and atmosphere.";
+
+        const instruction = `
+            Task: Write an image generation prompt for the following scene.
+            Scene: "${lastMessage}"
+            Style Constraint: ${styleInst}
+            Perspective: ${perspInst}
+            Additional Req: ${extra}
+            Output ONLY the prompt text.
+            `;
+
+        let generatedText = await generateQuietPrompt(instruction, true);
 
         if (didSwitch) {
             targetDropdown.val(originalProfile).trigger("change");
             await new Promise(r => setTimeout(r, 500));
         }
 
-        if (extension_settings[extensionName].debugPrompt) alert("DIAGNOSTIC:\n" + generatedText);
+        if (s.debugPrompt) {
+            // Hide progress while user is confirming
+            hideKazumaProgress();
 
+            const $content = $(`
+                <div style="display: flex; flex-direction: column; gap: 10px;">
+                    <p><b>Review generated prompt:</b></p>
+                    <textarea class="text_pole" rows="6" style="width:100%; resize:vertical; font-family:monospace;">${generatedText}</textarea>
+                </div>
+            `);
+            let currentText = generatedText;
+            $content.find("textarea").on("input", function() { currentText = $(this).val(); });
+            const popup = new Popup($content, POPUP_TYPE.CONFIRM, "Diagnostic Mode", { okButton: "Send", cancelButton: "Stop" });
+            const confirmed = await popup.show();
+
+            if (!confirmed) {
+                toastr.info("Generation stopped by user.");
+                return;
+            }
+            generatedText = currentText;
+            // Show progress again
+            showKazumaProgress("Sending to ComfyUI...");
+        }
+
+        // Update progress text
+        showKazumaProgress("Sending to ComfyUI...");
         await generateWithComfy(generatedText, null);
 
     } catch (err) {
+        // [HIDE PROGRESS ON ERROR]
+        hideKazumaProgress();
         if (didSwitch) targetDropdown.val(originalProfile).trigger("change");
         console.error(err);
         toastr.error("Generation failed. Check console.");
@@ -512,6 +608,9 @@ async function onImageSwiped(data) {
 }
 
 async function waitForGeneration(baseUrl, promptId, positivePrompt, target) {
+     // [UPDATE TEXT]
+     showKazumaProgress("Rendering Image...");
+
      const checkInterval = setInterval(async () => {
         try {
             const h = await (await fetch(`${baseUrl}/history/${promptId}`)).json();
@@ -527,11 +626,19 @@ async function waitForGeneration(baseUrl, promptId, positivePrompt, target) {
                     }
                 }
                 if (finalImage) {
+                    // [UPDATE TEXT]
+                    showKazumaProgress("Downloading...");
+
                     const imgUrl = `${baseUrl}/view?filename=${finalImage.filename}&subfolder=${finalImage.subfolder}&type=${finalImage.type}`;
                     await insertImageToChat(imgUrl, positivePrompt, target);
+
+                    // [HIDE WHEN DONE]
+                    hideKazumaProgress();
+                } else {
+                    hideKazumaProgress();
                 }
             }
-        } catch (e) {}
+        } catch (e) { }
     }, 1000);
 }
 
@@ -615,6 +722,21 @@ async function insertImageToChat(imgUrl, promptText, target = null) {
 // --- INIT ---
 jQuery(async () => {
     try {
+        // 1. INJECT PROGRESS BAR HTML (New Code Here)
+        if ($("#kazuma_progress_overlay").length === 0) {
+            $("body").append(`
+                <div id="kazuma_progress_overlay">
+                    <div style="flex:1">
+                        <span id="kazuma_progress_text">Generating Image...</span>
+                        <div class="kazuma-bar-container">
+                            <div class="kazuma-bar-fill"></div>
+                        </div>
+                    </div>
+                </div>
+            `);
+        }
+
+        // 2. Load Settings & Bind Events
         await $.get(`${extensionFolderPath}/example.html`).then(h => $("#extensions_settings2").append(h));
 
         $("#kazuma_enable").on("change", (e) => { extension_settings[extensionName].enabled = $(e.target).prop("checked"); saveSettingsDebounced(); });
@@ -624,9 +746,43 @@ jQuery(async () => {
         $("#kazuma_auto_enable").on("change", (e) => { extension_settings[extensionName].autoGenEnabled = $(e.target).prop("checked"); saveSettingsDebounced(); });
         $("#kazuma_auto_freq").on("input", (e) => { let v = parseInt($(e.target).val()); if(v<1)v=1; extension_settings[extensionName].autoGenFreq = v; saveSettingsDebounced(); });
 
-        $("#kazuma_workflow_list").on("change", (e) => { extension_settings[extensionName].currentWorkflowName = $(e.target).val(); saveSettingsDebounced(); });
+        // SMART WORKFLOW SWITCHER
+        $("#kazuma_workflow_list").on("change", (e) => {
+            const newWorkflow = $(e.target).val();
+            const oldWorkflow = extension_settings[extensionName].currentWorkflowName;
+
+            // 1. Snapshot OLD workflow settings
+            if (oldWorkflow) {
+                if (!extension_settings[extensionName].savedWorkflowStates) extension_settings[extensionName].savedWorkflowStates = {};
+                extension_settings[extensionName].savedWorkflowStates[oldWorkflow] = getWorkflowState();
+                console.log(`[${extensionName}] Saved context for ${oldWorkflow}`);
+            }
+
+            // 2. Load NEW workflow settings (if they exist)
+            if (extension_settings[extensionName].savedWorkflowStates && extension_settings[extensionName].savedWorkflowStates[newWorkflow]) {
+                applyWorkflowState(extension_settings[extensionName].savedWorkflowStates[newWorkflow]);
+                toastr.success(`Restored settings for ${newWorkflow}`);
+            } else {
+                // If no saved state, we keep current values (Inheritance) - smoother UX
+                toastr.info(`New workflow context active`);
+            }
+
+            // 3. Update Pointer
+            extension_settings[extensionName].currentWorkflowName = newWorkflow;
+            saveSettingsDebounced();
+        });
         $("#kazuma_import_btn").on("click", () => $("#kazuma_import_file").click());
-        // NEW LISTENERS
+
+        // New Logic Events
+        $("#kazuma_prompt_style").on("change", (e) => { extension_settings[extensionName].promptStyle = $(e.target).val(); saveSettingsDebounced(); });
+        $("#kazuma_prompt_persp").on("change", (e) => { extension_settings[extensionName].promptPerspective = $(e.target).val(); saveSettingsDebounced(); });
+        $("#kazuma_prompt_extra").on("input", (e) => { extension_settings[extensionName].promptExtra = $(e.target).val(); saveSettingsDebounced(); });
+        $("#kazuma_profile_strategy").on("change", (e) => {
+            extension_settings[extensionName].profileStrategy = $(e.target).val();
+            toggleProfileVisibility();
+            saveSettingsDebounced();
+        });
+
         $("#kazuma_new_workflow").on("click", onComfyNewWorkflowClick);
         $("#kazuma_edit_workflow").on("click", onComfyOpenWorkflowEditorClick);
         $("#kazuma_delete_workflow").on("click", onComfyDeleteWorkflowClick);
@@ -692,3 +848,74 @@ function onMessageReceived(id) { if (!extension_settings[extensionName].enabled 
 function createChatButton() { if ($("#kazuma_quick_gen").length > 0) return; const b = `<div id="kazuma_quick_gen" class="interactable" title="Visualize" style="cursor: pointer; width: 35px; height: 35px; display: flex; align-items: center; justify-content: center; margin-right: 5px; opacity: 0.7;"><i class="fa-solid fa-paintbrush fa-lg"></i></div>`; let t = $("#send_but_sheld"); if (!t.length) t = $("#send_textarea"); if (t.length) { t.attr("id") === "send_textarea" ? t.before(b) : t.prepend(b); } }
 function populateProfiles() { const s=$("#kazuma_profile"),o=$("#settings_preset_openai").find("option");s.empty().append('<option value="">-- Use Current Settings --</option>');if(o.length)o.each(function(){s.append(`<option value="${$(this).val()}">${$(this).text()}</option>`)});if(extension_settings[extensionName].connectionProfile)s.val(extension_settings[extensionName].connectionProfile);}
 async function onFileSelected(e) { const f=e.target.files[0];if(!f)return;const t=await f.text();try{const j=JSON.parse(t),n=prompt("Name:",f.name.replace(".json",""));if(n){extension_settings[extensionName].savedWorkflows[n]=j;extension_settings[extensionName].currentWorkflowName=n;saveSettingsDebounced();populateWorkflows();}}catch{toastr.error("Invalid JSON");}$(e.target).val('');}
+function showKazumaProgress(text = "Processing...") {
+    $("#kazuma_progress_text").text(text);
+    $("#kazuma_progress_overlay").css("display", "flex");
+}
+
+function hideKazumaProgress() {
+    $("#kazuma_progress_overlay").hide();
+}
+/* --- WORKFLOW CONTEXT MANAGERS --- */
+function getWorkflowState() {
+    const s = extension_settings[extensionName];
+    // Capture all image-related parameters
+    return {
+        selectedModel: s.selectedModel,
+        selectedSampler: s.selectedSampler,
+        steps: s.steps,
+        cfg: s.cfg,
+        denoise: s.denoise,
+        clipSkip: s.clipSkip,
+        imgWidth: s.imgWidth,
+        imgHeight: s.imgHeight,
+        customSeed: s.customSeed,
+        customNegative: s.customNegative,
+        // Smart Prompts
+        promptStyle: s.promptStyle,
+        promptPerspective: s.promptPerspective,
+        promptExtra: s.promptExtra,
+        // LoRAs
+        selectedLora: s.selectedLora, selectedLoraWt: s.selectedLoraWt,
+        selectedLora2: s.selectedLora2, selectedLoraWt2: s.selectedLoraWt2,
+        selectedLora3: s.selectedLora3, selectedLoraWt3: s.selectedLoraWt3,
+        selectedLora4: s.selectedLora4, selectedLoraWt4: s.selectedLoraWt4,
+    };
+}
+
+function applyWorkflowState(state) {
+    const s = extension_settings[extensionName];
+    // 1. Update Global Settings
+    Object.assign(s, state);
+
+    // 2. Update UI Elements
+    $("#kazuma_model_list").val(s.selectedModel);
+    $("#kazuma_sampler_list").val(s.selectedSampler);
+
+    updateSliderInput('kazuma_steps', 'kazuma_steps_val', s.steps);
+    updateSliderInput('kazuma_cfg', 'kazuma_cfg_val', s.cfg);
+    updateSliderInput('kazuma_denoise', 'kazuma_denoise_val', s.denoise);
+    updateSliderInput('kazuma_clip', 'kazuma_clip_val', s.clipSkip);
+
+    $("#kazuma_width").val(s.imgWidth);
+    $("#kazuma_height").val(s.imgHeight);
+    $("#kazuma_seed").val(s.customSeed);
+    $("#kazuma_negative").val(s.customNegative);
+
+    // Smart Prompt UI
+    $("#kazuma_prompt_style").val(s.promptStyle || "standard");
+    $("#kazuma_prompt_persp").val(s.promptPerspective || "scene");
+    $("#kazuma_prompt_extra").val(s.promptExtra || "");
+
+    // LoRA UI
+    $("#kazuma_lora_list").val(s.selectedLora);
+    $("#kazuma_lora_list_2").val(s.selectedLora2);
+    $("#kazuma_lora_list_3").val(s.selectedLora3);
+    $("#kazuma_lora_list_4").val(s.selectedLora4);
+
+    // LoRA Weights UI
+    $("#kazuma_lora_wt").val(s.selectedLoraWt); $("#kazuma_lora_wt_display").text(s.selectedLoraWt);
+    $("#kazuma_lora_wt_2").val(s.selectedLoraWt2); $("#kazuma_lora_wt_display_2").text(s.selectedLoraWt2);
+    $("#kazuma_lora_wt_3").val(s.selectedLoraWt3); $("#kazuma_lora_wt_display_3").text(s.selectedLoraWt3);
+    $("#kazuma_lora_wt_4").val(s.selectedLoraWt4); $("#kazuma_lora_wt_display_4").text(s.selectedLoraWt4);
+}
