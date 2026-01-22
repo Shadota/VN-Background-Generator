@@ -969,6 +969,11 @@ function cleanTags(rawTags, charName) {
         // Max 15 tags
         .slice(0, 15);
 
+    // Always include 1girl after character name
+    if (!tags.includes('1girl')) {
+        tags.splice(1, 0, '1girl');
+    }
+
     return tags.join(', ');
 }
 
