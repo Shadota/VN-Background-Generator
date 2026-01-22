@@ -425,47 +425,169 @@ async function onTestConnection() {
 
 /* --- TAG GENERATION CONFIG (Hardcoded) --- */
 const TAG_GEN_CONFIG = {
-    temperature: 0.6,
+    temperature: 0.4,
     top_p: 0.85,
     frequency_penalty: 0,
     presence_penalty: 1.5,
     max_tokens: 1000,
-    systemPrompt: `You are a Danbooru tag generator. Output ONLY comma-separated booru tags for image generation.
+    systemPrompt: `You generate Danbooru tags for images. Output ONLY comma-separated tags.
 
-ALLOWED TAGS (use these categories ONLY):
-- Character name: {{char}}
-- Pose: sitting, standing, lying_down, kneeling, walking, running, leaning_forward, arms_crossed, hand_on_hip
-- Expression: smile, soft_smile, grin, blush, angry, sad, surprised, crying, laughing, smirk, frown, open_mouth, closed_eyes
-- Setting/Background: indoors, outdoors, bedroom, kitchen, beach, forest, city, street, office, classroom, night, sunset, sunrise
-- Clothing (ONLY if different from default): swimsuit, bikini, dress, pajamas, towel, nude, underwear, formal_wear, casual_clothes
-- Camera/Composition: close-up, portrait, full_body, from_above, from_below, from_side
+VALID TAG CATEGORIES:
+- Pose: sitting, standing, lying_down, kneeling, leaning_forward, arms_crossed, hand_on_hip, walking
+- Expression: smile, soft_smile, blush, angry, sad, surprised, crying, laughing, smirk, frown, open_mouth, closed_eyes, looking_away
+- Setting: indoors, outdoors, bedroom, bed, kitchen, beach, forest, city, office, classroom, chair, couch, window
+- Lighting/Time: night, sunset, sunrise, warm_lighting, dim_lighting
+- Clothing (only if specified): swimsuit, bikini, dress, pajamas, apron, towel, casual_clothes
+- Camera: close-up, portrait, full_body, from_above, from_below, from_side
 
-STRICTLY FORBIDDEN - Never output these:
-- Physical appearance (hair_color, eye_color, body type, skin tone) - LoRA handles this
-- Abstract concepts (love, connection, affection, intimate, creative, simulation)
-- Emotions as concepts (feeling_happy, warmth, comfort) - use facial expressions instead
-- Made-up tags (warm_hum, digital_glow) - only use real booru tags
-- Quality tags (masterpiece, best_quality, highres)
-- Artist names
-
-FORMAT: Output 8-12 tags, comma-separated, using underscores for multi-word tags. Nothing else.
+WRONG vs CORRECT examples:
+- WRONG: blue_eyes, long_hair, pale_skin → CORRECT: (omit these, LoRA handles appearance)
+- WRONG: intimate_moment, feeling_warm, connection → CORRECT: (omit abstract concepts)
+- WRONG: circuitry_eyes, digital_glow, pink_glow → CORRECT: (omit made-up tags)
+- WRONG: contemplative, thoughtful_expression → CORRECT: thoughtful
+- WRONG: seated → CORRECT: sitting
+- WRONG: 3d_render, masterpiece → CORRECT: (omit quality/style tags)
 
 EXAMPLES:
 
-Input: *She sits on the bed, blushing and looking away shyly*
-Output: {{char}}, sitting, bed, bedroom, blush, looking_away, shy
+Scene: *She sits on the bed, blushing and looking away shyly*
+Tags: sitting, bed, bedroom, blush, looking_away, indoors
 
-Input: *Standing at the beach in her bikini, she waves at you with a bright smile*
-Output: {{char}}, standing, beach, bikini, waving, smile, sunny, ocean, outdoors
+Scene: *Standing at the beach in a bikini, waving with a bright smile*
+Tags: standing, beach, bikini, waving, smile, ocean, outdoors, sunny
 
-Input: *She's in the kitchen cooking, wearing an apron, focused on the stove*
-Output: {{char}}, standing, kitchen, apron, cooking, indoors, focused, stove
+Scene: *In the kitchen wearing an apron, focused on cooking*
+Tags: standing, kitchen, apron, indoors, focused
 
-Input: *Lying on the grass at sunset, gazing at the clouds peacefully*
-Output: {{char}}, lying_down, grass, sunset, outdoors, sky, peaceful, from_side`,
-    jailbreakPrompt: "Generate booru tags for the scene above. Output ONLY the comma-separated tags. No explanations. No abstract concepts. Only visual elements.",
-    assistantPrefill: "{{char}}, "
+Scene: *Lying on grass at sunset, gazing at clouds*
+Tags: lying_down, grass, sunset, outdoors, sky, from_side`,
+    jailbreakPrompt: "Output tags for the scene. Only visual elements. No appearance tags. No abstract concepts.",
+    assistantPrefill: ""
 };
+
+/* --- TAG POST-PROCESSING WITH BOORU VALIDATION --- */
+
+// Valid booru tags (curated from danbooru dataset)
+const VALID_BOORU_TAGS = new Set([
+    // Poses
+    'sitting', 'standing', 'lying', 'lying_down', 'kneeling', 'squatting', 'crouching',
+    'walking', 'running', 'jumping', 'falling', 'floating', 'flying', 'crawling',
+    'leaning', 'bending', 'stretching', 'sleeping', 'dancing', 'swimming', 'fighting',
+    'carrying', 'holding', 'pointing', 'waving', 'reaching', 'grabbing', 'pulling',
+    'pushing', 'throwing', 'catching', 'hugging', 'kissing',
+    // Expressions
+    'smile', 'grin', 'blush', 'frown', 'pout', 'scowl', 'smirk', 'sneer',
+    'expressionless', 'serious', 'angry', 'annoyed', 'sad', 'crying', 'tears',
+    'laughing', 'surprised', 'shocked', 'scared', 'worried', 'confused',
+    'embarrassed', 'nervous', 'shy', 'happy', 'excited', 'tired', 'sleepy',
+    'drunk', 'sick', 'calm', 'relaxed', 'determined', 'focused', 'thoughtful',
+    'curious', 'bored', 'lonely', 'jealous', 'open_mouth', 'closed_mouth', 'closed_eyes', 'thinking', 'pensive',
+    // Settings
+    'indoors', 'outdoors', 'bedroom', 'bathroom', 'kitchen', 'living_room', 'office',
+    'classroom', 'library', 'hospital', 'restaurant', 'cafe', 'bar', 'shop', 'street',
+    'road', 'path', 'bridge', 'park', 'garden', 'forest', 'mountain', 'hill', 'valley',
+    'river', 'lake', 'ocean', 'beach', 'island', 'desert', 'pool',
+    // Furniture/Objects
+    'bed', 'chair', 'couch', 'sofa', 'table', 'desk', 'floor', 'grass', 'sand', 'water',
+    'window', 'door', 'wall', 'ceiling', 'stairs', 'balcony',
+    // Time/Weather
+    'day', 'night', 'morning', 'evening', 'afternoon', 'sunset', 'sunrise',
+    'snow', 'rain', 'storm',
+    // Camera
+    'close-up', 'closeup', 'portrait', 'full_body', 'upper_body', 'lower_body',
+    'from_above', 'from_below', 'from_side', 'from_behind', 'pov', 'dutch_angle', 'cowboy_shot',
+    // Clothing
+    'bikini', 'swimsuit', 'dress', 'shirt', 'skirt', 'pants', 'shorts', 'jeans',
+    'uniform', 'school_uniform', 'suit', 'jacket', 'coat', 'hoodie', 'sweater', 'vest',
+    'apron', 'pajamas', 'underwear', 'bra', 'panties', 'lingerie', 'towel', 'robe',
+    'kimono', 'yukata', 'maid', 'nurse', 'nude', 'naked', 'topless', 'bottomless',
+    'casual', 'formal', 'military', 'police',
+    // Actions
+    'eating', 'drinking', 'reading', 'writing', 'cooking', 'cleaning', 'bathing', 'singing',
+    'playing', 'watching', 'looking_at_viewer', 'looking_away', 'looking_back',
+    // Misc useful
+    'solo', '1girl', '1boy', 'wet', 'sweating', 'warm_lighting', 'dim_lighting',
+    'soft_lighting', 'dramatic_lighting', 'back_lighting', 'silhouette',
+    'futuristic', 'modern', 'traditional', 'fantasy', 'sci-fi'
+]);
+
+// Alias corrections (maps common variations to canonical booru tags)
+const TAG_ALIASES = {
+    // Pose aliases
+    'seated': 'sitting', 'sit': 'sitting', 'sitting_down': 'sitting',
+    'laying': 'lying_down', 'laying_down': 'lying_down', 'laid': 'lying_down',
+    'on_knees': 'kneeling',
+    'crouch': 'crouching', 'crouched': 'crouching', 'squat': 'squatting',
+    'run': 'running', 'jump': 'jumping', 'walk': 'walking',
+    'stretch': 'stretching', 'dance': 'dancing', 'swim': 'swimming',
+    'sleep': 'sleeping', 'asleep': 'sleeping',
+    'carry': 'carrying', 'hold': 'holding', 'wave': 'waving',
+    'reach': 'reaching', 'pull': 'pulling', 'push': 'pushing',
+    'throw': 'throwing', 'catch': 'catching', 'fight': 'fighting',
+    // Expression aliases
+    'smiling': 'smile', 'grinning': 'grin', 'blushing': 'blush',
+    'frowning': 'frown', 'pouting': 'pout',
+    'cry': 'crying', 'tear': 'tears', 'laugh': 'laughing',
+    'shock': 'shocked', 'surprise': 'surprised', 'startled': 'surprised',
+    'anger': 'angry', 'mad': 'angry', 'irritated': 'annoyed',
+    'afraid': 'scared', 'fear': 'scared', 'terrified': 'scared',
+    'concern': 'worried', 'concerned': 'worried',
+    'sadness': 'sad', 'lonely': 'lonely',
+    'soft_smile': 'smile', 'warm_smile': 'smile',
+    'thoughtful_expression': 'pensive', 'soft_expression': 'smile',
+    'thoughtful': 'pensive',
+    'happy_expression': 'happy', 'neutral_expression': 'expressionless',
+    // Setting aliases
+    'outdoor': 'outdoors', 'outside': 'outdoors',
+    'indoor': 'indoors', 'inside': 'indoors',
+    'sea': 'ocean', 'woods': 'forest',
+    'class_room': 'classroom', 'coffee_shop': 'cafe',
+    'swimming_pool': 'pool',
+    // Camera aliases
+    'close_up': 'close-up', 'closeup': 'close-up',
+    'side': 'from_side', 'side_view': 'from_side',
+    'aerial_view': 'from_above', 'low_angle': 'from_below',
+    'bust': 'upper_body',
+    // Clothing aliases
+    'bathing_suit': 'swimsuit', 'swim_suit': 'swimsuit',
+    'pajama': 'pajamas', 'pyjamas': 'pajamas',
+    'maid_outfit': 'maid', 'maid_uniform': 'maid', 'maid_costume': 'maid',
+    'nurse_outfit': 'nurse', 'nurse_uniform': 'nurse',
+    'naked': 'nude',
+    // Misc
+    'raining': 'rain', 'settee': 'couch'
+};
+
+// Patterns that should always be filtered out
+const BAD_TAG_PATTERNS = [
+    /eyes?$/i, /hair$/i, /skin$/i, /_glow$/i, /lips?$/i,      // appearance
+    /moment$/i, /feeling/i, /emotion/i, /connection/i,         // abstract
+    /intimate/i, /affection/i, /love$/i, /warmth/i,            // abstract
+    /contemplat/i, /simulation/i, /creative/i,                 // abstract
+    /masterpiece/i, /best_quality/i, /highres/i, /quality/i,   // quality tags
+    /render$/i, /3d_/i, /digital$/i,                           // style tags
+    /circuitry/i, /algorithm/i, /data$/i,                      // tech abstract
+    /hum$/i, /feeling$/i                                        // more abstract
+];
+
+function cleanTags(rawTags, charName) {
+    let tags = rawTags
+        .split(',')
+        .map(t => t.trim().toLowerCase().replace(/\s+/g, '_'))
+        .filter(t => t.length > 1)
+        // Filter out bad patterns first
+        .filter(t => !BAD_TAG_PATTERNS.some(pattern => pattern.test(t)))
+        // Apply alias corrections
+        .map(t => TAG_ALIASES[t] || t)
+        // Only keep valid booru tags
+        .filter(t => VALID_BOORU_TAGS.has(t) || t === charName.toLowerCase())
+        // Dedupe
+        .filter((t, i, arr) => arr.indexOf(t) === i)
+        // Max 12 tags
+        .slice(0, 12);
+
+    return tags.join(', ');
+}
 
 async function generateTagsWithCustomApi(sceneText) {
     const s = extension_settings[extensionName];
@@ -493,10 +615,6 @@ async function generateTagsWithCustomApi(sceneText) {
             content: TAG_GEN_CONFIG.jailbreakPrompt.replace(/\{\{char\}\}/gi, charName)
         }
     ];
-
-    // Add assistant prefill
-    const prefill = TAG_GEN_CONFIG.assistantPrefill.replace(/\{\{char\}\}/gi, charName);
-    messages.push({ role: 'assistant', content: prefill });
 
     // Build request body using hardcoded settings
     const requestBody = {
@@ -536,9 +654,12 @@ async function generateTagsWithCustomApi(sceneText) {
     result = result.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
     result = result.replace(/<\/?think>/gi, '').trim();
 
-    // Prepend prefill to response if it was used
-    if (!result.startsWith(prefill)) {
-        result = prefill + result;
+    // Clean and filter tags
+    result = cleanTags(result, charName);
+
+    // Ensure character name is first
+    if (!result.toLowerCase().startsWith(charName.toLowerCase())) {
+        result = charName + ', ' + result;
     }
 
     return result;
