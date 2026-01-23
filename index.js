@@ -10389,7 +10389,46 @@ const TAG_ALIASES = {
     '||_||': '|_|',
     '•_•': 'solid_circle_eyes',
     '⑨': 'circled_9',
-    '♥_♥': 'heart-shaped_eyes'
+    '♥_♥': 'heart-shaped_eyes',
+    // --- LLM Bridge Aliases (manually curated) ---
+    // Lighting terms
+    'ambient_light': 'sunlight',
+    'ambient_lighting': 'sunlight',
+    'cold_light': 'blue_light',
+    'cold_lighting': 'blue_light',
+    'dappled_lighting': 'dappled_sunlight',
+    'diffused_light': 'sunlight',
+    'diffused_lighting': 'sunlight',
+    'filtered_light': 'dappled_sunlight',
+    'golden_light': 'sunset',
+    'harsh_light': 'sun_glare',
+    'natural_light': 'sunlight',
+    'natural_lighting': 'sunlight',
+    'overhead_light': 'hanging_light',
+    'overhead_lighting': 'hanging_light',
+    'warm_light': 'sunset',
+    'warm_lighting': 'sunset',
+    // Location synonyms
+    'coastline': 'ocean',
+    'lakeside': 'lake',
+    'lakeshore': 'lake',
+    'pathway': 'path',
+    'rainforest': 'forest',
+    'riverside': 'riverbank',
+    'seashore': 'ocean',
+    'seaside': 'ocean',
+    'suburban': 'town',
+    'woodland': 'forest',
+    // Camera/viewpoint terms
+    'three-quarter_view': 'three_quarter_view',
+    'worm_eye_view': 'under_shot',
+    'worms_eye_view': 'under_shot',
+    // Atmosphere/weather
+    'breezy': 'wind',
+    'cloudy': 'cloudy_sky',
+    'stormy': 'dark_clouds',
+    // Expression corrections
+    'crying': 'tears'
 };
 
 // Patterns that should always be filtered out
