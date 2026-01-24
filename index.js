@@ -10840,9 +10840,9 @@ async function generateTagsWithCustomApi(sceneText) {
     console.log(`[${extensionName}] Scene state saved:`, getSceneState());
     updatePersistenceUI();
 
-    // Ensure character name is first
-    if (!result.toLowerCase().startsWith(charName.toLowerCase())) {
-        result = charName + ', ' + result;
+    // Ensure trigger word is first
+    if (!result.toLowerCase().startsWith('ohwx')) {
+        result = 'ohwx, ' + result;
     }
 
     return result;
