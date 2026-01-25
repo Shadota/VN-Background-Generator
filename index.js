@@ -239,68 +239,107 @@ async function scanMessagesForState(count) {
         return `${name}: ${m.mes}`;
     }).join('\n\n');
 
-    const systemPrompt = `You are analyzing a roleplay conversation to detect the current scene state.
-Extract the current LOCATION/BACKGROUND, CLOTHING being worn, and POSITION/POSE of the main character.
-Output ONLY in this exact format (use booru-style tags, comma-separated):
-LOCATION: tag1, tag2, tag3
-CLOTHING: tag1, tag2, tag3
-POSITION: tag1, tag2, tag3
-
-If a category is unclear or not mentioned, output "(unknown)" for that line.
-Focus on the most recent state - what is true RIGHT NOW in the story.
-For POSITION, use tags like: sitting, standing, lying, kneeling, on_bed, on_chair, arms_crossed, etc.`;
-
-    const requestBody = {
-        model: s.tagModel,
-        messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: messages }
-        ],
-        max_tokens: 200,
-        temperature: 0.3
-    };
-
     const headers = { 'Content-Type': 'application/json' };
     if (s.tagApiKey) {
         headers['Authorization'] = `Bearer ${s.tagApiKey}`;
     }
 
+    // Category-specific prompts
+    const categoryPrompts = {
+        background: {
+            system: `You are a booru tag extractor. Analyze the roleplay conversation and determine the CURRENT location/setting where the scene is taking place RIGHT NOW (not past locations).
+
+Output ONLY comma-separated booru-style tags for the location. Use tags like: indoors, outdoors, bedroom, bathroom, kitchen, living_room, classroom, office, cafe, restaurant, bar_(place), street, park, forest, beach, pool, night, day, etc.
+
+Rules:
+- Output ONLY tags, no explanations or sentences
+- Use underscores instead of spaces (e.g., living_room not "living room")
+- Focus on the CURRENT/MOST RECENT location only
+- If unclear, output: unknown`,
+            user: `Extract the CURRENT location/background tags from this conversation:\n\n${messages}`
+        },
+        clothing: {
+            system: `You are a booru tag extractor. Analyze the roleplay conversation and determine what clothing/outfit the main female character is CURRENTLY wearing RIGHT NOW.
+
+Output ONLY comma-separated booru-style tags for clothing. Use tags like: dress, shirt, skirt, pants, jeans, shorts, bikini, swimsuit, school_uniform, pajamas, lingerie, nude, towel, jacket, sweater, thighhighs, pantyhose, boots, high_heels, etc.
+
+Rules:
+- Output ONLY tags, no explanations or sentences
+- Use underscores instead of spaces
+- Focus on the CURRENT outfit only (what they changed into most recently)
+- If they undressed, use: nude, topless, or specific remaining items
+- If unclear, output: unknown`,
+            user: `Extract the CURRENT clothing tags from this conversation:\n\n${messages}`
+        },
+        position: {
+            system: `You are a booru tag extractor. Analyze the roleplay conversation and determine the CURRENT body position/pose of the main female character RIGHT NOW.
+
+Output ONLY comma-separated booru-style tags for position/pose. Use tags like: sitting, standing, lying, kneeling, crouching, on_bed, on_chair, on_couch, on_floor, leaning, bent_over, all_fours, arms_crossed, hands_on_hips, looking_at_viewer, looking_away, from_behind, from_side, etc.
+
+Rules:
+- Output ONLY tags, no explanations or sentences
+- Use underscores instead of spaces
+- Focus on the CURRENT/MOST RECENT position only
+- Include both the pose AND the surface/furniture if mentioned (e.g., sitting, on_chair)
+- If unclear, output: unknown`,
+            user: `Extract the CURRENT position/pose tags from this conversation:\n\n${messages}`
+        }
+    };
+
     try {
-        toastr.info("Scanning messages...", "Image Gen Kazuma");
+        toastr.info("Scanning messages for state...", "Image Gen Kazuma");
 
-        const response = await fetch(s.tagApiEndpoint, {
-            method: 'POST',
-            headers: headers,
-            body: JSON.stringify(requestBody)
-        });
+        // Scan each category separately
+        const results = {};
+        for (const [category, prompts] of Object.entries(categoryPrompts)) {
+            const requestBody = {
+                model: s.tagModel,
+                messages: [
+                    { role: 'system', content: prompts.system },
+                    { role: 'user', content: prompts.user }
+                ],
+                max_tokens: 100,
+                temperature: 0.2
+            };
 
-        if (!response.ok) {
-            const error = await response.text();
-            throw new Error(`API failed (${response.status}): ${error}`);
+            const response = await fetch(s.tagApiEndpoint, {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify(requestBody)
+            });
+
+            if (!response.ok) {
+                const error = await response.text();
+                throw new Error(`API failed for ${category} (${response.status}): ${error}`);
+            }
+
+            const data = await response.json();
+            let result = data.choices[0].message.content;
+
+            // Strip thinking tags
+            if (result.includes('</think>')) {
+                result = result.split('</think>').pop().trim();
+            }
+            result = result.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+
+            // Clean up the result - remove any non-tag content
+            result = result.replace(/^(tags?:|output:|result:)\s*/i, '');
+            result = result.replace(/\n.*/g, ''); // Only take first line
+            result = result.trim();
+
+            results[category] = result;
+            console.log(`[${extensionName}] Scan ${category}:`, result);
         }
 
-        const data = await response.json();
-        let result = data.choices[0].message.content;
-
-        // Strip thinking tags
-        if (result.includes('</think>')) {
-            result = result.split('</think>').pop().trim();
+        // Apply results (skip if unknown)
+        if (results.background && results.background.toLowerCase() !== 'unknown') {
+            setManualOverride('background', results.background);
         }
-        result = result.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-
-        // Parse the response
-        const locationMatch = result.match(/LOCATION:\s*(.+)/i);
-        const clothingMatch = result.match(/CLOTHING:\s*(.+)/i);
-        const positionMatch = result.match(/POSITION:\s*(.+)/i);
-
-        if (locationMatch && locationMatch[1] && !locationMatch[1].includes('(unknown)')) {
-            setManualOverride('background', locationMatch[1].trim());
+        if (results.clothing && results.clothing.toLowerCase() !== 'unknown') {
+            setManualOverride('clothing', results.clothing);
         }
-        if (clothingMatch && clothingMatch[1] && !clothingMatch[1].includes('(unknown)')) {
-            setManualOverride('clothing', clothingMatch[1].trim());
-        }
-        if (positionMatch && positionMatch[1] && !positionMatch[1].includes('(unknown)')) {
-            setManualOverride('position', positionMatch[1].trim());
+        if (results.position && results.position.toLowerCase() !== 'unknown') {
+            setManualOverride('position', results.position);
         }
 
         updatePopoutStateUI();
