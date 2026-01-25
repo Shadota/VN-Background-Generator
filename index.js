@@ -194,29 +194,13 @@ function toggleStateLock(category) {
 function updatePopoutStateUI() {
     const state = getSceneState();
 
-    // Location section
-    const bgState = state.background || { tags: [], locked: false, manualOverride: '' };
-    const bgEffective = getEffectiveStateTags('background');
-    $("#kazuma_state_location_input").val(bgState.manualOverride || '');
-    $("#kazuma_state_location_tags").text(bgEffective.length > 0 ? bgEffective.join(', ') : '(none)');
-    $("#kazuma_lock_location").toggleClass('locked', bgState.locked)
-        .find('i').attr('class', bgState.locked ? 'fa-solid fa-lock' : 'fa-solid fa-lock-open');
-
-    // Clothing section
+    // Clothing section (only override used in sprite mode)
     const clothState = state.clothing || { tags: [], locked: false, manualOverride: '' };
     const clothEffective = getEffectiveStateTags('clothing');
     $("#kazuma_state_clothing_input").val(clothState.manualOverride || '');
     $("#kazuma_state_clothing_tags").text(clothEffective.length > 0 ? clothEffective.join(', ') : '(none)');
     $("#kazuma_lock_clothing").toggleClass('locked', clothState.locked)
         .find('i').attr('class', clothState.locked ? 'fa-solid fa-lock' : 'fa-solid fa-lock-open');
-
-    // Position section
-    const posState = state.position || { tags: [], locked: false, manualOverride: '' };
-    const posEffective = getEffectiveStateTags('position');
-    $("#kazuma_state_position_input").val(posState.manualOverride || '');
-    $("#kazuma_state_position_tags").text(posEffective.length > 0 ? posEffective.join(', ') : '(none)');
-    $("#kazuma_lock_position").toggleClass('locked', posState.locked)
-        .find('i').attr('class', posState.locked ? 'fa-solid fa-lock' : 'fa-solid fa-lock-open');
 }
 
 async function scanMessagesForState(count) {
@@ -244,22 +228,9 @@ async function scanMessagesForState(count) {
         headers['Authorization'] = `Bearer ${s.tagApiKey}`;
     }
 
-    // Category-specific prompts
-    const categoryPrompts = {
-        background: {
-            system: `You are a booru tag extractor. Analyze the roleplay conversation and determine the CURRENT location/setting where the scene is taking place RIGHT NOW (not past locations).
-
-Output ONLY comma-separated booru-style tags for the location. Use tags like: indoors, outdoors, bedroom, bathroom, kitchen, living_room, classroom, office, cafe, restaurant, bar_(place), street, park, forest, beach, pool, night, day, etc.
-
-Rules:
-- Output ONLY tags, no explanations or sentences
-- Use underscores instead of spaces (e.g., living_room not "living room")
-- Focus on the CURRENT/MOST RECENT location only
-- If unclear, output: unknown`,
-            user: `Extract the CURRENT location/background tags from this conversation:\n\n${messages}`
-        },
-        clothing: {
-            system: `You are a booru tag extractor. Analyze the roleplay conversation and determine what clothing/outfit the main female character is CURRENTLY wearing RIGHT NOW.
+    // Clothing-only prompt for sprite mode
+    const clothingPrompt = {
+        system: `You are a booru tag extractor. Analyze the roleplay conversation and determine what clothing/outfit the main female character is CURRENTLY wearing RIGHT NOW.
 
 Output ONLY comma-separated booru-style tags for clothing. Use tags like: dress, shirt, skirt, pants, jeans, shorts, bikini, swimsuit, school_uniform, pajamas, lingerie, nude, towel, jacket, sweater, thighhighs, pantyhose, boots, high_heels, etc.
 
@@ -269,81 +240,56 @@ Rules:
 - Focus on the CURRENT outfit only (what they changed into most recently)
 - If they undressed, use: nude, topless, or specific remaining items
 - If unclear, output: unknown`,
-            user: `Extract the CURRENT clothing tags from this conversation:\n\n${messages}`
-        },
-        position: {
-            system: `You are a booru tag extractor. Analyze the roleplay conversation and determine the CURRENT body position/pose of the main female character RIGHT NOW.
-
-Output ONLY comma-separated booru-style tags for position/pose. Use tags like: sitting, standing, lying, kneeling, crouching, on_bed, on_chair, on_couch, on_floor, leaning, bent_over, all_fours, arms_crossed, hands_on_hips, looking_at_viewer, looking_away, from_behind, from_side, etc.
-
-Rules:
-- Output ONLY tags, no explanations or sentences
-- Use underscores instead of spaces
-- Focus on the CURRENT/MOST RECENT position only
-- Include both the pose AND the surface/furniture if mentioned (e.g., sitting, on_chair)
-- If unclear, output: unknown`,
-            user: `Extract the CURRENT position/pose tags from this conversation:\n\n${messages}`
-        }
+        user: `Extract the CURRENT clothing tags from this conversation:\n\n${messages}`
     };
 
     try {
-        toastr.info("Scanning messages for state...", "Image Gen Kazuma");
+        toastr.info("Scanning messages for clothing...", "Image Gen Kazuma");
 
-        // Scan each category separately
-        const results = {};
-        for (const [category, prompts] of Object.entries(categoryPrompts)) {
-            const requestBody = {
-                model: s.tagModel,
-                messages: [
-                    { role: 'system', content: prompts.system },
-                    { role: 'user', content: prompts.user }
-                ],
-                max_tokens: 100,
-                temperature: 0.2
-            };
+        const requestBody = {
+            model: s.tagModel,
+            messages: [
+                { role: 'system', content: clothingPrompt.system },
+                { role: 'user', content: clothingPrompt.user }
+            ],
+            max_tokens: 100,
+            temperature: 0.2
+        };
 
-            const response = await fetch(s.tagApiEndpoint, {
-                method: 'POST',
-                headers: headers,
-                body: JSON.stringify(requestBody)
-            });
+        const response = await fetch(s.tagApiEndpoint, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify(requestBody)
+        });
 
-            if (!response.ok) {
-                const error = await response.text();
-                throw new Error(`API failed for ${category} (${response.status}): ${error}`);
-            }
-
-            const data = await response.json();
-            let result = data.choices[0].message.content;
-
-            // Strip thinking tags
-            if (result.includes('</think>')) {
-                result = result.split('</think>').pop().trim();
-            }
-            result = result.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-
-            // Clean up the result - remove any non-tag content
-            result = result.replace(/^(tags?:|output:|result:)\s*/i, '');
-            result = result.replace(/\n.*/g, ''); // Only take first line
-            result = result.trim();
-
-            results[category] = result;
-            console.log(`[${extensionName}] Scan ${category}:`, result);
+        if (!response.ok) {
+            const error = await response.text();
+            throw new Error(`API failed (${response.status}): ${error}`);
         }
 
-        // Apply results (skip if unknown)
-        if (results.background && results.background.toLowerCase() !== 'unknown') {
-            setManualOverride('background', results.background);
+        const data = await response.json();
+        let result = data.choices[0].message.content;
+
+        // Strip thinking tags
+        if (result.includes('</think>')) {
+            result = result.split('</think>').pop().trim();
         }
-        if (results.clothing && results.clothing.toLowerCase() !== 'unknown') {
-            setManualOverride('clothing', results.clothing);
-        }
-        if (results.position && results.position.toLowerCase() !== 'unknown') {
-            setManualOverride('position', results.position);
+        result = result.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+
+        // Clean up the result - remove any non-tag content
+        result = result.replace(/^(tags?:|output:|result:)\s*/i, '');
+        result = result.replace(/\n.*/g, ''); // Only take first line
+        result = result.trim();
+
+        console.log(`[${extensionName}] Scan clothing:`, result);
+
+        // Apply result (skip if unknown)
+        if (result && result.toLowerCase() !== 'unknown') {
+            setManualOverride('clothing', result);
         }
 
         updatePopoutStateUI();
-        toastr.success("Scan complete! Review the detected state.");
+        toastr.success("Scan complete! Review the detected clothing.");
 
     } catch (err) {
         console.error(`[${extensionName}] Scan failed:`, err);
@@ -491,33 +437,13 @@ function injectPopoutHTML() {
                 <div id="kazuma_state_panel">
                     <div class="kazuma-state-section">
                         <div class="kazuma-state-header">
-                            <span>Location</span>
-                            <button id="kazuma_lock_location" class="kazuma-lock-btn" title="Lock location state">
-                                <i class="fa-solid fa-lock-open"></i>
-                            </button>
-                        </div>
-                        <input type="text" id="kazuma_state_location_input" class="kazuma-state-input" placeholder="e.g. bedroom, indoors, night">
-                        <div class="kazuma-state-tags">Current: <span id="kazuma_state_location_tags">(none)</span></div>
-                    </div>
-                    <div class="kazuma-state-section">
-                        <div class="kazuma-state-header">
-                            <span>Clothing</span>
+                            <span>Clothing Override</span>
                             <button id="kazuma_lock_clothing" class="kazuma-lock-btn" title="Lock clothing state">
                                 <i class="fa-solid fa-lock-open"></i>
                             </button>
                         </div>
                         <input type="text" id="kazuma_state_clothing_input" class="kazuma-state-input" placeholder="e.g. school_uniform, thighhighs">
                         <div class="kazuma-state-tags">Current: <span id="kazuma_state_clothing_tags">(none)</span></div>
-                    </div>
-                    <div class="kazuma-state-section">
-                        <div class="kazuma-state-header">
-                            <span>Position</span>
-                            <button id="kazuma_lock_position" class="kazuma-lock-btn" title="Lock position state">
-                                <i class="fa-solid fa-lock-open"></i>
-                            </button>
-                        </div>
-                        <input type="text" id="kazuma_state_position_input" class="kazuma-state-input" placeholder="e.g. sitting, on_chair, arms_crossed">
-                        <div class="kazuma-state-tags">Current: <span id="kazuma_state_position_tags">(none)</span></div>
                     </div>
                 </div>
                 <div id="kazuma_popout_prompt"></div>
@@ -559,14 +485,7 @@ function bindPopoutEvents() {
     $("#kazuma_popout_regenerate").on("click", onPopoutRegenerate);
     $("#kazuma_popout_scan").on("click", showScanModal);
 
-    // State lock buttons
-    $("#kazuma_lock_location").on("click", function() {
-        const locked = toggleStateLock('background');
-        $(this).toggleClass('locked', locked)
-            .find('i').attr('class', locked ? 'fa-solid fa-lock' : 'fa-solid fa-lock-open');
-        toastr.info(locked ? "Location locked" : "Location unlocked", "Image Gen Kazuma");
-    });
-
+    // Clothing lock button
     $("#kazuma_lock_clothing").on("click", function() {
         const locked = toggleStateLock('clothing');
         $(this).toggleClass('locked', locked)
@@ -574,40 +493,13 @@ function bindPopoutEvents() {
         toastr.info(locked ? "Clothing locked" : "Clothing unlocked", "Image Gen Kazuma");
     });
 
-    $("#kazuma_lock_position").on("click", function() {
-        const locked = toggleStateLock('position');
-        $(this).toggleClass('locked', locked)
-            .find('i').attr('class', locked ? 'fa-solid fa-lock' : 'fa-solid fa-lock-open');
-        toastr.info(locked ? "Position locked" : "Position unlocked", "Image Gen Kazuma");
-    });
-
-    // State input fields with debounce
-    let locationDebounce = null;
-    $("#kazuma_state_location_input").on("input", function() {
-        clearTimeout(locationDebounce);
-        const value = $(this).val();
-        locationDebounce = setTimeout(() => {
-            setManualOverride('background', value);
-            updatePopoutStateUI();
-        }, 500);
-    });
-
+    // Clothing input with debounce
     let clothingDebounce = null;
     $("#kazuma_state_clothing_input").on("input", function() {
         clearTimeout(clothingDebounce);
         const value = $(this).val();
         clothingDebounce = setTimeout(() => {
             setManualOverride('clothing', value);
-            updatePopoutStateUI();
-        }, 500);
-    });
-
-    let positionDebounce = null;
-    $("#kazuma_state_position_input").on("input", function() {
-        clearTimeout(positionDebounce);
-        const value = $(this).val();
-        positionDebounce = setTimeout(() => {
-            setManualOverride('position', value);
             updatePopoutStateUI();
         }, 500);
     });
@@ -11194,12 +11086,12 @@ function buildSpritePrompt(stateJson) {
         parts.push(ACTION_PRESETS[stateJson.action]);
     }
 
-    // 6. Clothing override (if set)
-    if (s.persistenceEnabled) {
-        const clothEffective = getEffectiveStateTags('clothing');
-        if (clothEffective.length > 0) {
-            parts.push(...clothEffective);
-        }
+    // 6. Clothing override (manual only - LoRA has default outfit)
+    const state = getSceneState();
+    const clothOverride = state.clothing?.manualOverride?.trim();
+    if (clothOverride) {
+        const clothTags = clothOverride.split(',').map(t => t.trim()).filter(t => t.length > 0);
+        parts.push(...clothTags);
     }
 
     // 7. Fixed framing (always last)
