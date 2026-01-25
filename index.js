@@ -115,7 +115,216 @@ function getSceneState() {
     const s = extension_settings[extensionName];
     if (!s.savedSceneStates) s.savedSceneStates = {};
     const key = getSceneStateKey();
-    return s.savedSceneStates[key] || { background: [], clothing: [] };
+
+    // Default new format
+    const defaultState = {
+        background: { tags: [], locked: false, manualOverride: '' },
+        clothing: { tags: [], locked: false, manualOverride: '' }
+    };
+
+    let state = s.savedSceneStates[key];
+    if (!state) return defaultState;
+
+    // Migration: convert old format { background: [], clothing: [] } to new format
+    if (Array.isArray(state.background) || Array.isArray(state.clothing)) {
+        state = {
+            background: { tags: Array.isArray(state.background) ? state.background : [], locked: false, manualOverride: '' },
+            clothing: { tags: Array.isArray(state.clothing) ? state.clothing : [], locked: false, manualOverride: '' }
+        };
+        s.savedSceneStates[key] = state;
+        saveSettingsDebounced();
+    }
+
+    return state;
+}
+
+function getEffectiveStateTags(category) {
+    const state = getSceneState();
+    const catState = state[category];
+    if (!catState) return [];
+
+    // Manual override takes precedence
+    if (catState.manualOverride && catState.manualOverride.trim()) {
+        return catState.manualOverride.split(',').map(t => t.trim()).filter(t => t.length > 0);
+    }
+    return catState.tags || [];
+}
+
+function setManualOverride(category, value) {
+    const s = extension_settings[extensionName];
+    if (!s.savedSceneStates) s.savedSceneStates = {};
+    const key = getSceneStateKey();
+
+    let state = getSceneState();
+    if (state[category]) {
+        state[category].manualOverride = value;
+        s.savedSceneStates[key] = state;
+        saveSettingsDebounced();
+    }
+}
+
+function toggleStateLock(category) {
+    const s = extension_settings[extensionName];
+    if (!s.savedSceneStates) s.savedSceneStates = {};
+    const key = getSceneStateKey();
+
+    let state = getSceneState();
+    if (state[category]) {
+        state[category].locked = !state[category].locked;
+        s.savedSceneStates[key] = state;
+        saveSettingsDebounced();
+        return state[category].locked;
+    }
+    return false;
+}
+
+function updatePopoutStateUI() {
+    const state = getSceneState();
+
+    // Location section
+    const bgState = state.background || { tags: [], locked: false, manualOverride: '' };
+    const bgEffective = getEffectiveStateTags('background');
+    $("#kazuma_state_location_input").val(bgState.manualOverride || '');
+    $("#kazuma_state_location_tags").text(bgEffective.length > 0 ? bgEffective.join(', ') : '(none)');
+    $("#kazuma_lock_location").toggleClass('locked', bgState.locked)
+        .find('i').attr('class', bgState.locked ? 'fa-solid fa-lock' : 'fa-solid fa-lock-open');
+
+    // Clothing section
+    const clothState = state.clothing || { tags: [], locked: false, manualOverride: '' };
+    const clothEffective = getEffectiveStateTags('clothing');
+    $("#kazuma_state_clothing_input").val(clothState.manualOverride || '');
+    $("#kazuma_state_clothing_tags").text(clothEffective.length > 0 ? clothEffective.join(', ') : '(none)');
+    $("#kazuma_lock_clothing").toggleClass('locked', clothState.locked)
+        .find('i').attr('class', clothState.locked ? 'fa-solid fa-lock' : 'fa-solid fa-lock-open');
+}
+
+async function scanMessagesForState(count) {
+    const s = extension_settings[extensionName];
+    if (!s.tagApiEndpoint || !s.tagModel) {
+        toastr.error("Tag API not configured. Please set endpoint and model in settings.");
+        return;
+    }
+
+    const context = getContext();
+    const chat = context.chat || [];
+    if (chat.length === 0) {
+        toastr.warning("No messages to scan");
+        return;
+    }
+
+    // Get last N messages
+    const messages = chat.slice(-count).map(m => {
+        const name = m.name || (m.is_user ? 'User' : 'Character');
+        return `${name}: ${m.mes}`;
+    }).join('\n\n');
+
+    const systemPrompt = `You are analyzing a roleplay conversation to detect the current scene state.
+Extract the current LOCATION/BACKGROUND and CLOTHING being worn by the main character.
+Output ONLY in this exact format (use booru-style tags, comma-separated):
+LOCATION: tag1, tag2, tag3
+CLOTHING: tag1, tag2, tag3
+
+If a category is unclear or not mentioned, output "(unknown)" for that line.
+Focus on the most recent state - what is true RIGHT NOW in the story.`;
+
+    const requestBody = {
+        model: s.tagModel,
+        messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: messages }
+        ],
+        max_tokens: 200,
+        temperature: 0.3
+    };
+
+    const headers = { 'Content-Type': 'application/json' };
+    if (s.tagApiKey) {
+        headers['Authorization'] = `Bearer ${s.tagApiKey}`;
+    }
+
+    try {
+        toastr.info("Scanning messages...", "Image Gen Kazuma");
+
+        const response = await fetch(s.tagApiEndpoint, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify(requestBody)
+        });
+
+        if (!response.ok) {
+            const error = await response.text();
+            throw new Error(`API failed (${response.status}): ${error}`);
+        }
+
+        const data = await response.json();
+        let result = data.choices[0].message.content;
+
+        // Strip thinking tags
+        if (result.includes('</think>')) {
+            result = result.split('</think>').pop().trim();
+        }
+        result = result.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+
+        // Parse the response
+        const locationMatch = result.match(/LOCATION:\s*(.+)/i);
+        const clothingMatch = result.match(/CLOTHING:\s*(.+)/i);
+
+        if (locationMatch && locationMatch[1] && !locationMatch[1].includes('(unknown)')) {
+            setManualOverride('background', locationMatch[1].trim());
+        }
+        if (clothingMatch && clothingMatch[1] && !clothingMatch[1].includes('(unknown)')) {
+            setManualOverride('clothing', clothingMatch[1].trim());
+        }
+
+        updatePopoutStateUI();
+        toastr.success("Scan complete! Review the detected state.");
+
+    } catch (err) {
+        console.error(`[${extensionName}] Scan failed:`, err);
+        toastr.error(`Scan failed: ${err.message}`);
+    }
+}
+
+function showScanModal() {
+    // Create modal if it doesn't exist
+    if ($("#kazuma_scan_modal").length === 0) {
+        const modalHTML = `
+            <div id="kazuma_scan_modal">
+                <div class="kazuma-modal-content">
+                    <h3><i class="fa-solid fa-magnifying-glass"></i> Scan Messages</h3>
+                    <p>How many recent messages should be analyzed?</p>
+                    <div class="kazuma-scan-options">
+                        <button class="kazuma-scan-option" data-count="5">Last 5</button>
+                        <button class="kazuma-scan-option" data-count="10">Last 10</button>
+                        <button class="kazuma-scan-option" data-count="20">Last 20</button>
+                        <button class="kazuma-scan-option" data-count="50">Last 50</button>
+                    </div>
+                    <button id="kazuma_scan_cancel" class="kazuma-scan-cancel">Cancel</button>
+                </div>
+            </div>
+        `;
+        $("body").append(modalHTML);
+
+        // Bind events
+        $(".kazuma-scan-option").on("click", function() {
+            const count = parseInt($(this).data("count"));
+            $("#kazuma_scan_modal").removeClass("visible");
+            scanMessagesForState(count);
+        });
+
+        $("#kazuma_scan_cancel").on("click", function() {
+            $("#kazuma_scan_modal").removeClass("visible");
+        });
+
+        // Close on backdrop click
+        $("#kazuma_scan_modal").on("click", function(e) {
+            if (e.target === this) {
+                $(this).removeClass("visible");
+            }
+        });
+    }
+
+    $("#kazuma_scan_modal").addClass("visible");
 }
 
 function updateSceneState(tagArray) {
@@ -127,11 +336,17 @@ function updateSceneState(tagArray) {
     const bgTags = tagArray.filter(t => BACKGROUND_TAGS.has(t));
     const clothTags = tagArray.filter(t => CLOTHING_TAGS.has(t));
 
-    const current = s.savedSceneStates[key] || { background: [], clothing: [] };
+    const current = getSceneState();
 
-    // Only update a category if the LLM produced tags for it
-    if (bgTags.length > 0) current.background = bgTags.slice(0, 4);
-    if (clothTags.length > 0) current.clothing = clothTags.slice(0, 3);
+    // Only update background if LLM produced tags, not locked, and no manual override
+    if (bgTags.length > 0 && !current.background.locked && !current.background.manualOverride) {
+        current.background.tags = bgTags.slice(0, 4);
+    }
+
+    // Only update clothing if LLM produced tags, not locked, and no manual override
+    if (clothTags.length > 0 && !current.clothing.locked && !current.clothing.manualOverride) {
+        current.clothing.tags = clothTags.slice(0, 3);
+    }
 
     s.savedSceneStates[key] = current;
     saveSettingsDebounced();
@@ -141,10 +356,14 @@ function resetSceneState(category) {
     const s = extension_settings[extensionName];
     if (!s.savedSceneStates) s.savedSceneStates = {};
     const key = getSceneStateKey();
-    const current = s.savedSceneStates[key] || { background: [], clothing: [] };
+    const current = getSceneState();
 
-    if (category === 'background' || category === 'all') current.background = [];
-    if (category === 'clothing' || category === 'all') current.clothing = [];
+    if (category === 'background' || category === 'all') {
+        current.background = { tags: [], locked: false, manualOverride: '' };
+    }
+    if (category === 'clothing' || category === 'all') {
+        current.clothing = { tags: [], locked: false, manualOverride: '' };
+    }
 
     s.savedSceneStates[key] = current;
     saveSettingsDebounced();
@@ -155,8 +374,15 @@ function updatePersistenceUI() {
     const key = getSceneStateKey();
     const state = getSceneState();
     console.log(`[${extensionName}] updatePersistenceUI: key="${key}" state=`, state);
-    $("#kazuma_persist_bg_tags").text(state.background.length > 0 ? state.background.join(', ') : '(none)');
-    $("#kazuma_persist_cloth_tags").text(state.clothing.length > 0 ? state.clothing.join(', ') : '(none)');
+    const bgEffective = getEffectiveStateTags('background');
+    const clothEffective = getEffectiveStateTags('clothing');
+    $("#kazuma_persist_bg_tags").text(bgEffective.length > 0 ? bgEffective.join(', ') : '(none)');
+    $("#kazuma_persist_cloth_tags").text(clothEffective.length > 0 ? clothEffective.join(', ') : '(none)');
+
+    // Also update popout state UI if it exists
+    if ($KAZUMA_POPOUT && $KAZUMA_POPOUT.hasClass('kazuma-popout-visible')) {
+        updatePopoutStateUI();
+    }
 }
 
 // --- POPOUT FUNCTIONS ---
@@ -187,16 +413,35 @@ function injectPopoutHTML() {
                         <span>Generating...</span>
                     </div>
                 </div>
+                <div id="kazuma_state_panel">
+                    <div class="kazuma-state-section">
+                        <div class="kazuma-state-header">
+                            <span>Location</span>
+                            <button id="kazuma_lock_location" class="kazuma-lock-btn" title="Lock location state">
+                                <i class="fa-solid fa-lock-open"></i>
+                            </button>
+                        </div>
+                        <input type="text" id="kazuma_state_location_input" class="kazuma-state-input" placeholder="e.g. bedroom, indoors, night">
+                        <div class="kazuma-state-tags">Current: <span id="kazuma_state_location_tags">(none)</span></div>
+                    </div>
+                    <div class="kazuma-state-section">
+                        <div class="kazuma-state-header">
+                            <span>Clothing</span>
+                            <button id="kazuma_lock_clothing" class="kazuma-lock-btn" title="Lock clothing state">
+                                <i class="fa-solid fa-lock-open"></i>
+                            </button>
+                        </div>
+                        <input type="text" id="kazuma_state_clothing_input" class="kazuma-state-input" placeholder="e.g. school_uniform, thighhighs">
+                        <div class="kazuma-state-tags">Current: <span id="kazuma_state_clothing_tags">(none)</span></div>
+                    </div>
+                </div>
                 <div id="kazuma_popout_prompt"></div>
                 <div id="kazuma_popout_actions">
                     <button id="kazuma_popout_regenerate" title="Regenerate with same prompt">
                         <i class="fa-solid fa-rotate"></i> Regenerate
                     </button>
-                    <button id="kazuma_popout_save" title="Save image to chat">
-                        <i class="fa-solid fa-comment"></i> To Chat
-                    </button>
-                    <button id="kazuma_popout_download" title="Download image">
-                        <i class="fa-solid fa-download"></i> Download
+                    <button id="kazuma_popout_scan" title="Scan messages to detect state">
+                        <i class="fa-solid fa-magnifying-glass"></i> Scan Messages
                     </button>
                 </div>
             </div>
@@ -227,8 +472,43 @@ function bindPopoutEvents() {
 
     // Action buttons
     $("#kazuma_popout_regenerate").on("click", onPopoutRegenerate);
-    $("#kazuma_popout_save").on("click", onPopoutSaveToChat);
-    $("#kazuma_popout_download").on("click", onPopoutDownload);
+    $("#kazuma_popout_scan").on("click", showScanModal);
+
+    // State lock buttons
+    $("#kazuma_lock_location").on("click", function() {
+        const locked = toggleStateLock('background');
+        $(this).toggleClass('locked', locked)
+            .find('i').attr('class', locked ? 'fa-solid fa-lock' : 'fa-solid fa-lock-open');
+        toastr.info(locked ? "Location locked" : "Location unlocked", "Image Gen Kazuma");
+    });
+
+    $("#kazuma_lock_clothing").on("click", function() {
+        const locked = toggleStateLock('clothing');
+        $(this).toggleClass('locked', locked)
+            .find('i').attr('class', locked ? 'fa-solid fa-lock' : 'fa-solid fa-lock-open');
+        toastr.info(locked ? "Clothing locked" : "Clothing unlocked", "Image Gen Kazuma");
+    });
+
+    // State input fields with debounce
+    let locationDebounce = null;
+    $("#kazuma_state_location_input").on("input", function() {
+        clearTimeout(locationDebounce);
+        const value = $(this).val();
+        locationDebounce = setTimeout(() => {
+            setManualOverride('background', value);
+            updatePopoutStateUI();
+        }, 500);
+    });
+
+    let clothingDebounce = null;
+    $("#kazuma_state_clothing_input").on("input", function() {
+        clearTimeout(clothingDebounce);
+        const value = $(this).val();
+        clothingDebounce = setTimeout(() => {
+            setManualOverride('clothing', value);
+            updatePopoutStateUI();
+        }, 500);
+    });
 
     // Save position on resize
     $KAZUMA_POPOUT.on("mouseup", saveKazumaPopoutPosition);
@@ -239,6 +519,7 @@ function openKazumaPopout() {
     $KAZUMA_POPOUT.addClass("kazuma-popout-visible");
     KAZUMA_POPOUT_VISIBLE = true;
     $("#kazuma_popout_toggle").addClass("active");
+    updatePopoutStateUI();
 }
 
 function closeKazumaPopout() {
@@ -423,6 +704,9 @@ function updatePopoutImage(imageUrl, promptText, base64Data = '') {
 
     // Hide loading
     hidePopoutLoading();
+
+    // Update state UI to reflect current state
+    updatePopoutStateUI();
 }
 
 function showPopoutLoading(text = "Generating...") {
@@ -10674,24 +10958,42 @@ function applyPersistence(tagString) {
     if (!s.persistenceEnabled) return tagString;
 
     const state = getSceneState();
-    if (state.background.length === 0 && state.clothing.length === 0) return tagString;
+    const bgEffective = getEffectiveStateTags('background');
+    const clothEffective = getEffectiveStateTags('clothing');
+
+    if (bgEffective.length === 0 && clothEffective.length === 0) return tagString;
 
     let tags = tagString.split(',').map(t => t.trim()).filter(t => t.length > 0);
 
     const hasBgTag = tags.some(t => BACKGROUND_TAGS.has(t));
     const hasClothTag = tags.some(t => CLOTHING_TAGS.has(t));
 
+    // Check if categories are locked or have manual override
+    const bgLocked = state.background.locked || (state.background.manualOverride && state.background.manualOverride.trim());
+    const clothLocked = state.clothing.locked || (state.clothing.manualOverride && state.clothing.manualOverride.trim());
+
     let toInject = [];
-    if (!hasBgTag && state.background.length > 0) {
-        toInject.push(...state.background);
-    }
-    if (!hasClothTag && state.clothing.length > 0) {
-        toInject.push(...state.clothing);
+
+    // For locked/override categories: remove existing tags of that type and replace with effective
+    if (bgLocked && bgEffective.length > 0) {
+        tags = tags.filter(t => !BACKGROUND_TAGS.has(t));
+        toInject.push(...bgEffective);
+    } else if (!hasBgTag && bgEffective.length > 0) {
+        // Not locked and no LLM bg tags: inject saved
+        toInject.push(...bgEffective);
     }
 
-    if (toInject.length === 0) return tagString;
+    if (clothLocked && clothEffective.length > 0) {
+        tags = tags.filter(t => !CLOTHING_TAGS.has(t));
+        toInject.push(...clothEffective);
+    } else if (!hasClothTag && clothEffective.length > 0) {
+        // Not locked and no LLM cloth tags: inject saved
+        toInject.push(...clothEffective);
+    }
 
-    // Dynamic tags take priority; persistent fills remaining up to 15
+    if (toInject.length === 0) return tags.join(', ');
+
+    // Inject tags, respecting the 15 tag limit
     const remaining = 15 - tags.length;
     if (remaining > 0) {
         const inject = toInject.filter(t => !tags.includes(t)).slice(0, remaining);

@@ -403,6 +403,179 @@
     opacity: 1;
 }
 
+/* ====================== */
+/* STATE PANEL STYLES    */
+/* ====================== */
+
+#kazuma_state_panel {
+    margin-top: 10px;
+    padding: 10px;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.kazuma-state-section {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.kazuma-state-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--smart-text-color);
+    opacity: 0.9;
+}
+
+.kazuma-state-input {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid var(--smart-border-color);
+    background: rgba(0, 0, 0, 0.3);
+    color: var(--smart-text-color);
+    border-radius: 4px;
+    font-size: 12px;
+    box-sizing: border-box;
+}
+
+.kazuma-state-input:focus {
+    outline: none;
+    border-color: var(--smart-theme-color);
+}
+
+.kazuma-state-input::placeholder {
+    color: var(--smart-text-color);
+    opacity: 0.4;
+}
+
+.kazuma-lock-btn {
+    background: transparent;
+    border: none;
+    color: var(--smart-text-color);
+    cursor: pointer;
+    padding: 4px 6px;
+    border-radius: 4px;
+    opacity: 0.6;
+    transition: all 0.2s;
+}
+
+.kazuma-lock-btn:hover {
+    opacity: 1;
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.kazuma-lock-btn.locked {
+    color: var(--smart-theme-color);
+    opacity: 1;
+}
+
+.kazuma-state-tags {
+    font-size: 11px;
+    color: var(--smart-text-color);
+    opacity: 0.6;
+    word-break: break-word;
+}
+
+.kazuma-state-tags span {
+    color: var(--smart-theme-color);
+    opacity: 1;
+}
+
+/* ====================== */
+/* SCAN MODAL STYLES     */
+/* ====================== */
+
+#kazuma_scan_modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 99999;
+    display: none;
+    justify-content: center;
+    align-items: center;
+}
+
+#kazuma_scan_modal.visible {
+    display: flex;
+}
+
+.kazuma-modal-content {
+    background: var(--smart-background-color);
+    border: 1px solid var(--smart-border-color);
+    border-radius: 8px;
+    padding: 20px;
+    max-width: 320px;
+    width: 90%;
+    text-align: center;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.kazuma-modal-content h3 {
+    margin: 0 0 10px 0;
+    font-size: 16px;
+    color: var(--smart-text-color);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+
+.kazuma-modal-content p {
+    margin: 0 0 15px 0;
+    font-size: 13px;
+    color: var(--smart-text-color);
+    opacity: 0.8;
+}
+
+.kazuma-scan-options {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.kazuma-scan-option {
+    padding: 10px 12px;
+    border: 1px solid var(--smart-border-color);
+    background: rgba(0, 0, 0, 0.2);
+    color: var(--smart-text-color);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: all 0.2s;
+}
+
+.kazuma-scan-option:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: var(--smart-theme-color);
+}
+
+.kazuma-scan-cancel {
+    padding: 8px 20px;
+    border: 1px solid var(--smart-border-color);
+    background: transparent;
+    color: var(--smart-text-color);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    opacity: 0.7;
+    transition: all 0.2s;
+}
+
+.kazuma-scan-cancel:hover {
+    opacity: 1;
+    background: rgba(255, 0, 0, 0.1);
+}
+
 /* Mobile Responsive */
 @media (max-width: 600px) {
     #kazuma_popout {
@@ -419,5 +592,9 @@
 
     #kazuma_popout_actions button {
         flex: 1 1 45%;
+    }
+
+    .kazuma-scan-options {
+        grid-template-columns: 1fr;
     }
 }
