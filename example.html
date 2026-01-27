@@ -1,6 +1,6 @@
 <div class="inline-drawer">
     <div class="inline-drawer-toggle inline-drawer-header">
-        <b>Image Gen Kazuma</b>
+        <b>VN Background Gen</b>
         <div id="kazuma_popout_toggle" class="fa-regular fa-window-restore" title="Toggle Pop-out Window"></div>
         <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
     </div>
@@ -64,25 +64,42 @@
 
             </div>
 
-            <!-- Group: Sprite Mode Settings -->
+            <!-- Group: Background Behavior -->
             <div class="kazuma-group">
-                <div class="kazuma-header"><i class="fa-solid fa-user"></i> Sprite Mode</div>
+                <div class="kazuma-header"><i class="fa-solid fa-mountain-sun"></i> Background Behavior</div>
 
-                <label class="kazuma-row" title="Use full_body framing instead of upper_body">
-                    <span>Full Body</span>
-                    <input type="checkbox" id="kazuma_full_body" />
+                <label class="kazuma-row" title="Automatically set generated image as SillyTavern background">
+                    <span>Auto-Set as Background</span>
+                    <input type="checkbox" id="kazuma_auto_set_bg" />
                 </label>
+            </div>
 
-                <div class="kazuma-sub-label">Clothing Override</div>
+            <!-- Group: Scene State -->
+            <div class="kazuma-group">
+                <div class="kazuma-header"><i class="fa-solid fa-map-location-dot"></i> Scene State</div>
+
+                <div class="kazuma-sub-label">Location</div>
                 <div class="kazuma-row" style="justify-content: space-between; align-items: center;">
-                    <span id="kazuma_persist_cloth_tags" style="font-size: 0.85em; opacity: 0.8; flex: 1;">(none)</span>
-                    <button class="menu_button" id="kazuma_persist_reset_cloth" style="padding: 2px 8px; font-size: 0.8em;">Reset</button>
+                    <span id="kazuma_persist_location_tags" style="font-size: 0.85em; opacity: 0.8; flex: 1;">(none)</span>
+                    <button class="menu_button" id="kazuma_persist_reset_location" style="padding: 2px 8px; font-size: 0.8em;">Reset</button>
+                </div>
+
+                <div class="kazuma-sub-label">Atmosphere</div>
+                <div class="kazuma-row" style="justify-content: space-between; align-items: center;">
+                    <span id="kazuma_persist_atmosphere_tags" style="font-size: 0.85em; opacity: 0.8; flex: 1;">(none)</span>
+                    <button class="menu_button" id="kazuma_persist_reset_atmosphere" style="padding: 2px 8px; font-size: 0.8em;">Reset</button>
+                </div>
+
+                <div class="kazuma-sub-label">Time of Day</div>
+                <div class="kazuma-row" style="justify-content: space-between; align-items: center;">
+                    <span id="kazuma_persist_time_tags" style="font-size: 0.85em; opacity: 0.8; flex: 1;">(none)</span>
+                    <button class="menu_button" id="kazuma_persist_reset_time" style="padding: 2px 8px; font-size: 0.8em;">Reset</button>
                 </div>
             </div>
 
-            <!-- Group: Tag Generation API -->
+            <!-- Group: Scene Extraction API -->
             <div class="kazuma-group">
-                <div class="kazuma-header"><i class="fa-solid fa-robot"></i> Tag Generation API</div>
+                <div class="kazuma-header"><i class="fa-solid fa-robot"></i> Scene Extraction API</div>
 
                 <div class="kazuma-sub-label">API Endpoint</div>
                 <input id="kazuma_tag_endpoint" type="text" class="text_pole" style="width:100%; margin-bottom:8px;"
@@ -218,7 +235,7 @@
 
             <!-- Manual Action -->
             <button id="kazuma_gen_prompt_btn" class="menu_button" style="width:100%; padding: 10px;">
-                <i class="fa-solid fa-bolt"></i> Visualize Last Message
+                <i class="fa-solid fa-mountain-sun"></i> Generate Background
             </button>
         </div>
     </div>

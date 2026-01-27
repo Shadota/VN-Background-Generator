@@ -32,17 +32,23 @@ const KAZUMA_PLACEHOLDERS = [
 ];
 
 const RESOLUTIONS = [
-    { label: "1024 x 1024 (SDXL 1:1)", w: 1024, h: 1024 },
-    { label: "1152 x 896 (SDXL Landscape)", w: 1152, h: 896 },
-    { label: "896 x 1152 (SDXL Portrait)", w: 896, h: 1152 },
-    { label: "1216 x 832 (SDXL Landscape)", w: 1216, h: 832 },
-    { label: "832 x 1216 (SDXL Portrait)", w: 832, h: 1216 },
-    { label: "1344 x 768 (SDXL Landscape)", w: 1344, h: 768 },
-    { label: "768 x 1344 (SDXL Portrait)", w: 768, h: 1344 },
-    { label: "512 x 512 (SD 1.5 1:1)", w: 512, h: 512 },
-    { label: "768 x 512 (SD 1.5 Landscape)", w: 768, h: 512 },
-    { label: "512 x 768 (SD 1.5 Portrait)", w: 512, h: 768 },
+    { label: "1216 x 832 (Illustrious Landscape)", w: 1216, h: 832 },
+    { label: "1344 x 768 (Wide 16:9)", w: 1344, h: 768 },
+    { label: "1152 x 896 (4:3 Landscape)", w: 1152, h: 896 },
+    { label: "1024 x 1024 (1:1 Square)", w: 1024, h: 1024 },
+    { label: "832 x 1216 (Illustrious Portrait)", w: 832, h: 1216 },
+    { label: "2560 x 1440 (1440p — needs upscale workflow)", w: 2560, h: 1440 },
+    { label: "1920 x 1080 (1080p — needs upscale workflow)", w: 1920, h: 1080 },
 ];
+
+// Illustrious XL quality tags — always appended to prompt
+const ILLUSTRIOUS_QUALITY_TAGS = 'masterpiece, absurdres, newest, best quality';
+
+// Illustrious XL negative prompt — optimized for the model family
+const ILLUSTRIOUS_NEGATIVE = 'lowres, bad anatomy, bad hands, text, error, worst quality, low quality, jpeg artifacts, watermark, signature, username, scan, displeasing, oldest, early, chromatic aberration, artistic error, unfinished';
+
+// Character-exclusion negative — appended for background-only mode
+const CHARACTER_EXCLUSION_NEGATIVE = '1girl, 1boy, 1other, person, people, human, character, face, body, figure, solo';
 
 const defaultWorkflowData = {
   "3": { "inputs": { "seed": "seed", "steps": 20, "cfg": 7, "sampler_name": "sampler", "scheduler": "normal", "denoise": 1, "model": ["35", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0] }, "class_type": "KSampler" },
@@ -61,7 +67,7 @@ const defaultSettings = {
     enabled: true,
     debugPrompt: false,
     comfyUrl: "http://127.0.0.1:8188",
-    currentWorkflowName: "", // Server manages this now
+    currentWorkflowName: "",
     selectedModel: "",
     selectedLora: "",
     selectedLora2: "",
@@ -71,19 +77,20 @@ const defaultSettings = {
     selectedLoraWt2: 1.0,
     selectedLoraWt3: 1.0,
     selectedLoraWt4: 1.0,
-    imgWidth: 1024,
-    imgHeight: 1024,
+    imgWidth: 1216,       // Illustrious optimal landscape
+    imgHeight: 832,       // Illustrious optimal landscape
     autoGenEnabled: false,
     autoGenFreq: 1,
-    customNegative: "bad quality, blurry, worst quality, low quality",
+    // Illustrious-optimized negative (model-specific + character exclusion)
+    customNegative: ILLUSTRIOUS_NEGATIVE + ', ' + CHARACTER_EXCLUSION_NEGATIVE,
     customSeed: -1,
-    selectedSampler: "euler",
+    selectedSampler: "euler_a",   // Illustrious recommended
     compressImages: true,
-    steps: 20,
-    cfg: 7.0,
-    denoise: 0.5,
+    steps: 24,                    // Illustrious recommended (20+ with 24 sweet spot)
+    cfg: 5.5,                     // Illustrious sweet spot (range 4.5-7.5)
+    denoise: 1.0,                 // Full denoise for txt2img backgrounds
     clipSkip: 1,
-    // Tag Generation API Settings
+    // Scene Extraction API Settings
     tagApiEndpoint: "",
     tagApiKey: "",
     tagModel: "",
@@ -91,8 +98,7 @@ const defaultSettings = {
     // Scene Persistence Settings
     persistenceEnabled: true,
     savedSceneStates: {},
-    // Sprite Mode Settings
-    useFullBody: false,
+    autoSetBackground: true,      // Auto-set as ST background
     // Pop-out Settings
     usePopout: true,
     autoOpenPopout: true,
@@ -118,31 +124,33 @@ function getSceneState() {
     if (!s.savedSceneStates) s.savedSceneStates = {};
     const key = getSceneStateKey();
 
-    // Default new format
+    // Default new format for background-only mode
     const defaultState = {
-        background: { tags: [], locked: false, manualOverride: '' },
-        clothing: { tags: [], locked: false, manualOverride: '' },
-        position: { tags: [], locked: false, manualOverride: '' }
+        location: { tags: [], locked: false, manualOverride: '' },
+        atmosphere: { tags: [], locked: false, manualOverride: '' },
+        time: { tags: [], locked: false, manualOverride: '' }
     };
 
     let state = s.savedSceneStates[key];
     if (!state) return defaultState;
 
-    // Migration: convert old format { background: [], clothing: [] } to new format
+    // Migration: convert old sprite-mode format to new background-mode format
     let needsSave = false;
-    if (Array.isArray(state.background) || Array.isArray(state.clothing)) {
+    if (state.background || state.clothing || state.position) {
         state = {
-            background: { tags: Array.isArray(state.background) ? state.background : [], locked: false, manualOverride: '' },
-            clothing: { tags: Array.isArray(state.clothing) ? state.clothing : [], locked: false, manualOverride: '' },
-            position: { tags: [], locked: false, manualOverride: '' }
+            location: { tags: [], locked: false, manualOverride: '' },
+            atmosphere: { tags: [], locked: false, manualOverride: '' },
+            time: { tags: [], locked: false, manualOverride: '' }
         };
         needsSave = true;
     }
 
-    // Migration: add position field if missing
-    if (!state.position) {
-        state.position = { tags: [], locked: false, manualOverride: '' };
-        needsSave = true;
+    // Ensure all categories exist
+    for (const cat of ['location', 'atmosphere', 'time']) {
+        if (!state[cat]) {
+            state[cat] = { tags: [], locked: false, manualOverride: '' };
+            needsSave = true;
+        }
     }
 
     if (needsSave) {
@@ -196,19 +204,21 @@ function toggleStateLock(category) {
 function updatePopoutStateUI() {
     const state = getSceneState();
 
-    // Clothing section (only override used in sprite mode)
-    const clothState = state.clothing || { tags: [], locked: false, manualOverride: '' };
-    const clothEffective = getEffectiveStateTags('clothing');
-    $("#kazuma_state_clothing_input").val(clothState.manualOverride || '');
-    $("#kazuma_state_clothing_tags").text(clothEffective.length > 0 ? clothEffective.join(', ') : '(none)');
-    $("#kazuma_lock_clothing").toggleClass('locked', clothState.locked)
-        .find('i').attr('class', clothState.locked ? 'fa-solid fa-lock' : 'fa-solid fa-lock-open');
+    // Update all three scene categories
+    for (const category of ['location', 'atmosphere', 'time']) {
+        const catState = state[category] || { tags: [], locked: false, manualOverride: '' };
+        const effective = getEffectiveStateTags(category);
+        $(`#kazuma_state_${category}_input`).val(catState.manualOverride || '');
+        $(`#kazuma_state_${category}_tags`).text(effective.length > 0 ? effective.join(', ') : '(none)');
+        $(`#kazuma_lock_${category}`).toggleClass('locked', catState.locked)
+            .find('i').attr('class', catState.locked ? 'fa-solid fa-lock' : 'fa-solid fa-lock-open');
+    }
 }
 
 async function scanMessagesForState(count) {
     const s = extension_settings[extensionName];
     if (!s.tagApiEndpoint || !s.tagModel) {
-        toastr.error("Tag API not configured. Please set endpoint and model in settings.");
+        toastr.error("Scene Extraction API not configured. Please set endpoint and model in settings.");
         return;
     }
 
@@ -230,32 +240,18 @@ async function scanMessagesForState(count) {
         headers['Authorization'] = `Bearer ${s.tagApiKey}`;
     }
 
-    // Clothing-only prompt for sprite mode
-    const clothingPrompt = {
-        system: `You are a booru tag extractor. Analyze the roleplay conversation and determine what clothing/outfit the main female character is CURRENTLY wearing RIGHT NOW.
-
-Output ONLY comma-separated booru-style tags for clothing. Use tags like: dress, shirt, skirt, pants, jeans, shorts, bikini, swimsuit, school_uniform, pajamas, lingerie, nude, towel, jacket, sweater, thighhighs, pantyhose, boots, high_heels, etc.
-
-Rules:
-- Output ONLY tags, no explanations or sentences
-- Use underscores instead of spaces
-- Focus on the CURRENT outfit only (what they changed into most recently)
-- If they undressed, use: nude, topless, or specific remaining items
-- If unclear, output: unknown`,
-        user: `Extract the CURRENT clothing tags from this conversation:\n\n${messages}`
-    };
-
     try {
-        toastr.info("Scanning messages for clothing...", "Image Gen Kazuma");
+        toastr.info("Scanning messages for scene...", "VN Background Gen");
 
         const requestBody = {
             model: s.tagModel,
             messages: [
-                { role: 'system', content: clothingPrompt.system },
-                { role: 'user', content: clothingPrompt.user }
+                { role: 'system', content: SCENE_SYSTEM_PROMPT },
+                { role: 'user', content: `Extract the current scene from this conversation:\n\n${messages}` },
+                { role: 'assistant', content: '{"' }
             ],
-            max_tokens: 100,
-            temperature: 0.2
+            max_tokens: 300,
+            temperature: 0.15
         };
 
         const response = await fetch(s.tagApiEndpoint, {
@@ -277,21 +273,50 @@ Rules:
             result = result.split('</think>').pop().trim();
         }
         result = result.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+        result = result.replace(/<\/?think>/gi, '').trim();
 
-        // Clean up the result - remove any non-tag content
-        result = result.replace(/^(tags?:|output:|result:)\s*/i, '');
-        result = result.replace(/\n.*/g, ''); // Only take first line
-        result = result.trim();
+        // Prepend assistant prefill if model continued from it
+        if (!result.trim().startsWith('{')) {
+            result = '{"' + result;
+        }
 
-        console.log(`[${extensionName}] Scan clothing:`, result);
+        // Extract JSON
+        let jsonStr = result;
+        const jsonMatch = result.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (jsonMatch) {
+            jsonStr = jsonMatch[1].trim();
+        } else {
+            const objMatch = result.match(/\{[\s\S]*?\}/);
+            if (objMatch) jsonStr = objMatch[0];
+        }
 
-        // Apply result (skip if unknown)
-        if (result && result.toLowerCase() !== 'unknown') {
-            setManualOverride('clothing', result);
+        let sceneJson;
+        try {
+            sceneJson = JSON.parse(jsonStr);
+        } catch (e) {
+            throw new Error("Failed to parse scene JSON from scan");
+        }
+
+        sceneJson = validateAndRepairSceneState(sceneJson);
+        console.log(`[${extensionName}] Scan scene:`, sceneJson);
+
+        // Apply results to scene state categories
+        if (sceneJson.location) {
+            setManualOverride('location', sceneJson.location.replace(/\s+/g, '_'));
+        }
+        if (sceneJson.mood || sceneJson.weather) {
+            const atmParts = [];
+            if (sceneJson.mood) atmParts.push(sceneJson.mood);
+            if (sceneJson.weather && sceneJson.weather !== 'none') atmParts.push(sceneJson.weather);
+            setManualOverride('atmosphere', atmParts.join(', '));
+        }
+        if (sceneJson.time_of_day) {
+            setManualOverride('time', sceneJson.time_of_day);
         }
 
         updatePopoutStateUI();
-        toastr.success("Scan complete! Review the detected clothing.");
+        updatePersistenceUI();
+        toastr.success("Scan complete! Review the detected scene state.");
 
     } catch (err) {
         console.error(`[${extensionName}] Scan failed:`, err);
@@ -347,25 +372,25 @@ function updateSceneState(tagArray) {
     if (!s.savedSceneStates) s.savedSceneStates = {};
     const key = getSceneStateKey();
 
-    const bgTags = tagArray.filter(t => BACKGROUND_TAGS.has(t));
-    const clothTags = tagArray.filter(t => CLOTHING_TAGS.has(t));
-    const posTags = tagArray.filter(t => POSITION_TAGS.has(t));
+    const locTags = tagArray.filter(t => LOCATION_TAGS.has(t));
+    const atmTags = tagArray.filter(t => ATMOSPHERE_TAGS.has(t));
+    const timTags = tagArray.filter(t => TIME_TAGS.has(t));
 
     const current = getSceneState();
 
-    // Only update background if LLM produced tags, not locked, and no manual override
-    if (bgTags.length > 0 && !current.background.locked && !current.background.manualOverride) {
-        current.background.tags = bgTags.slice(0, 4);
+    // Only update location if LLM produced tags, not locked, and no manual override
+    if (locTags.length > 0 && !current.location.locked && !current.location.manualOverride) {
+        current.location.tags = locTags.slice(0, 5);
     }
 
-    // Only update clothing if LLM produced tags, not locked, and no manual override
-    if (clothTags.length > 0 && !current.clothing.locked && !current.clothing.manualOverride) {
-        current.clothing.tags = clothTags.slice(0, 3);
+    // Only update atmosphere if LLM produced tags, not locked, and no manual override
+    if (atmTags.length > 0 && !current.atmosphere.locked && !current.atmosphere.manualOverride) {
+        current.atmosphere.tags = atmTags.slice(0, 5);
     }
 
-    // Only update position if LLM produced tags, not locked, and no manual override
-    if (posTags.length > 0 && !current.position.locked && !current.position.manualOverride) {
-        current.position.tags = posTags.slice(0, 3);
+    // Only update time if LLM produced tags, not locked, and no manual override
+    if (timTags.length > 0 && !current.time.locked && !current.time.manualOverride) {
+        current.time.tags = timTags.slice(0, 3);
     }
 
     s.savedSceneStates[key] = current;
@@ -378,14 +403,14 @@ function resetSceneState(category) {
     const key = getSceneStateKey();
     const current = getSceneState();
 
-    if (category === 'background' || category === 'all') {
-        current.background = { tags: [], locked: false, manualOverride: '' };
+    if (category === 'location' || category === 'all') {
+        current.location = { tags: [], locked: false, manualOverride: '' };
     }
-    if (category === 'clothing' || category === 'all') {
-        current.clothing = { tags: [], locked: false, manualOverride: '' };
+    if (category === 'atmosphere' || category === 'all') {
+        current.atmosphere = { tags: [], locked: false, manualOverride: '' };
     }
-    if (category === 'position' || category === 'all') {
-        current.position = { tags: [], locked: false, manualOverride: '' };
+    if (category === 'time' || category === 'all') {
+        current.time = { tags: [], locked: false, manualOverride: '' };
     }
 
     s.savedSceneStates[key] = current;
@@ -398,9 +423,11 @@ function updatePersistenceUI() {
     const state = getSceneState();
     console.log(`[${extensionName}] updatePersistenceUI: key="${key}" state=`, state);
 
-    // Sprite mode: Only clothing override is used
-    const clothEffective = getEffectiveStateTags('clothing');
-    $("#kazuma_persist_cloth_tags").text(clothEffective.length > 0 ? clothEffective.join(', ') : '(none)');
+    // Update all three scene state displays
+    for (const category of ['location', 'atmosphere', 'time']) {
+        const effective = getEffectiveStateTags(category);
+        $(`#kazuma_persist_${category}_tags`).text(effective.length > 0 ? effective.join(', ') : '(none)');
+    }
 
     // Also update popout state UI if it exists
     if ($KAZUMA_POPOUT && $KAZUMA_POPOUT.hasClass('kazuma-popout-visible')) {
@@ -439,13 +466,33 @@ function injectPopoutHTML() {
                 <div id="kazuma_state_panel">
                     <div class="kazuma-state-section">
                         <div class="kazuma-state-header">
-                            <span>Clothing Override</span>
-                            <button id="kazuma_lock_clothing" class="kazuma-lock-btn" title="Lock clothing state">
+                            <span>Location</span>
+                            <button id="kazuma_lock_location" class="kazuma-lock-btn" title="Lock location state">
                                 <i class="fa-solid fa-lock-open"></i>
                             </button>
                         </div>
-                        <input type="text" id="kazuma_state_clothing_input" class="kazuma-state-input" placeholder="e.g. school_uniform, thighhighs">
-                        <div class="kazuma-state-tags">Current: <span id="kazuma_state_clothing_tags">(none)</span></div>
+                        <input type="text" id="kazuma_state_location_input" class="kazuma-state-input" placeholder="e.g. library, rooftop, forest">
+                        <div class="kazuma-state-tags">Current: <span id="kazuma_state_location_tags">(none)</span></div>
+                    </div>
+                    <div class="kazuma-state-section">
+                        <div class="kazuma-state-header">
+                            <span>Atmosphere</span>
+                            <button id="kazuma_lock_atmosphere" class="kazuma-lock-btn" title="Lock atmosphere state">
+                                <i class="fa-solid fa-lock-open"></i>
+                            </button>
+                        </div>
+                        <input type="text" id="kazuma_state_atmosphere_input" class="kazuma-state-input" placeholder="e.g. rain, dim_lighting, warm_ambient_lighting">
+                        <div class="kazuma-state-tags">Current: <span id="kazuma_state_atmosphere_tags">(none)</span></div>
+                    </div>
+                    <div class="kazuma-state-section">
+                        <div class="kazuma-state-header">
+                            <span>Time of Day</span>
+                            <button id="kazuma_lock_time" class="kazuma-lock-btn" title="Lock time state">
+                                <i class="fa-solid fa-lock-open"></i>
+                            </button>
+                        </div>
+                        <input type="text" id="kazuma_state_time_input" class="kazuma-state-input" placeholder="e.g. evening, sunset, night">
+                        <div class="kazuma-state-tags">Current: <span id="kazuma_state_time_tags">(none)</span></div>
                     </div>
                 </div>
                 <div id="kazuma_popout_prompt"></div>
@@ -487,24 +534,26 @@ function bindPopoutEvents() {
     $("#kazuma_popout_regenerate").on("click", onPopoutRegenerate);
     $("#kazuma_popout_scan").on("click", showScanModal);
 
-    // Clothing lock button
-    $("#kazuma_lock_clothing").on("click", function() {
-        const locked = toggleStateLock('clothing');
-        $(this).toggleClass('locked', locked)
-            .find('i').attr('class', locked ? 'fa-solid fa-lock' : 'fa-solid fa-lock-open');
-        toastr.info(locked ? "Clothing locked" : "Clothing unlocked", "Image Gen Kazuma");
-    });
+    // Scene state lock buttons and inputs for all three categories
+    for (const category of ['location', 'atmosphere', 'time']) {
+        $(`#kazuma_lock_${category}`).on("click", function() {
+            const locked = toggleStateLock(category);
+            $(this).toggleClass('locked', locked)
+                .find('i').attr('class', locked ? 'fa-solid fa-lock' : 'fa-solid fa-lock-open');
+            const label = category.charAt(0).toUpperCase() + category.slice(1);
+            toastr.info(locked ? `${label} locked` : `${label} unlocked`, "VN Background Gen");
+        });
 
-    // Clothing input with debounce
-    let clothingDebounce = null;
-    $("#kazuma_state_clothing_input").on("input", function() {
-        clearTimeout(clothingDebounce);
-        const value = $(this).val();
-        clothingDebounce = setTimeout(() => {
-            setManualOverride('clothing', value);
-            updatePopoutStateUI();
-        }, 500);
-    });
+        let debounceTimer = null;
+        $(`#kazuma_state_${category}_input`).on("input", function() {
+            clearTimeout(debounceTimer);
+            const value = $(this).val();
+            debounceTimer = setTimeout(() => {
+                setManualOverride(category, value);
+                updatePopoutStateUI();
+            }, 500);
+        });
+    }
 
     // Save position on resize
     $KAZUMA_POPOUT.on("mouseup", saveKazumaPopoutPosition);
@@ -621,7 +670,7 @@ function loadKazumaPopoutPosition() {
                 left: left + "px",
                 top: top + "px",
                 right: "auto",
-                width: pos.width ? pos.width + "px" : "400px",
+                width: pos.width ? pos.width + "px" : "500px",
                 height: pos.height ? pos.height + "px" : "auto"
             });
 
@@ -658,7 +707,7 @@ function resetKazumaPopoutSize() {
     if (!$KAZUMA_POPOUT) return;
 
     $KAZUMA_POPOUT.css({
-        width: "400px",
+        width: "500px",
         height: "auto"
     });
 
@@ -728,7 +777,7 @@ async function onPopoutRegenerate() {
         return;
     }
 
-    toastr.info("Regenerating image...", "Image Gen Kazuma");
+    toastr.info("Regenerating image...", "VN Background Gen");
     showPopoutLoading("Regenerating...");
     showKazumaProgress("Regenerating Image...");
 
@@ -748,7 +797,7 @@ async function onPopoutSaveToChat() {
     }
 
     try {
-        toastr.info("Saving to chat...", "Image Gen Kazuma");
+        toastr.info("Saving to chat...", "VN Background Gen");
 
         // Use the stored base64 if available, otherwise fetch from URL
         let base64FullURL = currentPopoutImageData.base64;
@@ -786,7 +835,7 @@ async function onPopoutSaveToChat() {
         };
 
         const newMessage = {
-            name: "Image Gen Kazuma", is_user: false, is_system: true, send_date: Date.now(),
+            name: "VN Background Gen", is_user: false, is_system: true, send_date: Date.now(),
             mes: "", extra: { media: [mediaAttachment], media_display: "gallery", media_index: 0, inline_image: false }, force_avatar: "img/five.png"
         };
         context.chat.push(newMessage);
@@ -841,8 +890,8 @@ async function loadSettings() {
     $("#kazuma_tag_api_key").val(extension_settings[extensionName].tagApiKey || "");
     $("#kazuma_tag_model").val(extension_settings[extensionName].tagModel || "");
 
-    // Sprite Mode Settings
-    $("#kazuma_full_body").prop("checked", extension_settings[extensionName].useFullBody);
+    // Background Behavior Settings
+    $("#kazuma_auto_set_bg").prop("checked", extension_settings[extensionName].autoSetBackground);
     updatePersistenceUI();
     // Retry after chat is likely loaded (chatId may not be available immediately)
     setTimeout(() => updatePersistenceUI(), 2000);
@@ -1159,144 +1208,91 @@ async function onTestConnection() {
     try {
         const result = await fetch('/api/sd/comfy/ping', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify({ url: url }) });
         if (result.ok) {
-            toastr.success("ComfyUI API connected!", "Image Gen Kazuma");
+            toastr.success("ComfyUI API connected!", "VN Background Gen");
             await fetchComfyLists();
         } else { throw new Error('ComfyUI returned an error via proxy.'); }
-    } catch (error) { toastr.error(`Connection failed: ${error.message}`, "Image Gen Kazuma"); }
+    } catch (error) { toastr.error(`Connection failed: ${error.message}`, "VN Background Gen"); }
 }
 
-/* --- SPRITE STATE EXTRACTION CONFIG (Hardcoded) --- */
-const SPRITE_STATE_PROMPT = `Extract the character's FINAL/ENDING state. Focus on how they END UP, not momentary reactions.
+/* --- SCENE EXTRACTION CONFIG --- */
+const SCENE_SYSTEM_PROMPT = `You extract scene settings from roleplay conversations as structured JSON for anime background image generation.
 
-EMOTIONS (pick one):
-- happy: joy, excitement, cheerful
-- gentle: warm, caring, fond, soft smile, kindness
-- serious: focused, direct, stern, no-nonsense
-- smug: arrogant, self-satisfied, mocking superiority
-- smirk: playful teasing, flirty, mischievous
-- blush: flustered, shy romantic tension
-- embarrassed: awkward, caught off-guard
-- sad: upset, disappointed, grief
-- angry: frustrated, annoyed, furious
-- surprised: shocked, caught off-guard
-- worried: anxious, concerned, nervous
-- tired: exhausted, sleepy, drained
-- pout: sulking, childish displeasure
-- neutral: no particular emotion
+Output ONLY valid JSON with these fields:
+{
+  "location": "specific place as a danbooru tag (e.g. bedroom, forest, classroom, rooftop, city_street, cafe)",
+  "time_of_day": "one of: morning, day, afternoon, evening, night, dawn, dusk",
+  "weather": "one of: clear, cloudy, rain, snow, fog, storm, wind, none",
+  "mood": "lighting and atmosphere as comma-separated tags (e.g. warm_ambient_lighting, soft_shadows, volumetric_lighting)",
+  "key_elements": "notable background objects/architecture as comma-separated tags (e.g. bookshelf, marble_floor, ornate_furniture, tall_windows)"
+}
 
-IMPORTANT DISTINCTIONS (DO NOT confuse these):
-- gentle (warm/caring/fond) ≠ smug (arrogant/superior) - "fond smile" = gentle, NOT smug
-- smirk (playful/teasing) ≠ smug (self-satisfied mockery)
-- happy (joyful) ≠ smug (pleased with oneself at others' expense)
-- serious (focused/direct) ≠ angry (frustrated/hostile)
-
-INTENSITY: low, medium, high
-POSE: standing, sitting, leaning, lying, kneeling, arms_crossed, hand_on_hip, hands_together
-ACTION: null, waving, pointing, thinking, eating, drinking, reading, hugging, gesturing
-
-Output ONLY valid JSON:
-{"emotion": "...", "intensity": "...", "pose": "...", "action": "..."}
+RULES:
+- Use the MOST RECENT scene description in the conversation
+- If a location change happened, use the NEW location
+- Use underscores for multi-word tags
+- Prefer specific booru/danbooru tags over vague descriptions
+- "mood" should describe LIGHTING and ATMOSPHERE, not emotions
+- "key_elements" should describe ARCHITECTURAL details, MATERIALS, FURNITURE, and NATURAL elements
+- Include material descriptions in key_elements (marble, wood, glass, stone, etc.)
+- Do NOT include character descriptions — only the environment
 
 EXAMPLES:
-1. *She smiles warmly, a fond look in her eyes* "I'll help you."
-{"emotion": "gentle", "intensity": "medium", "pose": "standing", "action": null}
+1. *They walk into the dimly lit library, rain pattering against tall windows*
+{"location":"library","time_of_day":"evening","weather":"rain","mood":"dim_lighting, warm_ambient_lighting, soft_shadows","key_elements":"bookshelf, tall_windows, rain, wooden_floor, chandelier"}
 
-2. *He leans back with a satisfied smirk* "I told you so."
-{"emotion": "smug", "intensity": "medium", "pose": "leaning", "action": null}
+2. *The morning sun bathes the rooftop in golden light as cherry blossoms drift by*
+{"location":"rooftop","time_of_day":"morning","weather":"clear","mood":"golden_hour, cinematic_lighting, volumetric_lighting, atmospheric_haze","key_elements":"cherry_blossoms, railing, blue_sky, cityscape, fence"}
 
-3. *She laughs, then her expression turns serious* "But listen carefully."
-{"emotion": "serious", "intensity": "medium", "pose": "standing", "action": null}
+3. *She enters the grand ballroom, marble floors reflecting crystal chandeliers*
+{"location":"ballroom","time_of_day":"evening","weather":"none","mood":"warm_ambient_lighting, professional_lighting, soft_shadows, volumetric_lighting","key_elements":"marble_floor, crystal_chandeliers, ornate_furniture, decorative_columns, tall_windows"}`;
 
-4. *Her face flushes as she looks away* "I-it's not like that!"
-{"emotion": "embarrassed", "intensity": "high", "pose": "standing", "action": null}
-
-5. *She reaches out, concern evident* "Are you okay?"
-{"emotion": "worried", "intensity": "medium", "pose": "standing", "action": "gesturing"}`;
-
-const TAG_GEN_CONFIG = {
-    temperature: 0.1,
+const SCENE_TAG_GEN_CONFIG = {
+    temperature: 0.15,
     top_p: 0.9,
     frequency_penalty: 0,
     presence_penalty: 0,
-    max_tokens: 200,
-    systemPrompt: SPRITE_STATE_PROMPT,
-    jailbreakPrompt: "",
+    max_tokens: 300,
+    systemPrompt: SCENE_SYSTEM_PROMPT,
     assistantPrefill: '{"'
 };
 
-/* --- SPRITE PRESET MAPPINGS --- */
-const EMOTION_PRESETS = {
-    neutral:     { low: "expressionless", medium: "closed_mouth", high: "serious" },
-    happy:       { low: "light_smile", medium: "smile", high: "grin" },
-    smirk:       { low: "smirk", medium: "smirk", high: "smug" },
-    blush:       { low: "light_blush", medium: "blush", high: "heavy_blush" },
-    embarrassed: { low: "nervous", medium: "embarrassed", high: "flustered" },
-    sad:         { low: "frown", medium: "sad", high: "crying" },
-    angry:       { low: "annoyed", medium: "angry", high: "rage" },
-    surprised:   { low: "curious", medium: "surprised", high: "wide_eyes" },
-    worried:     { low: "worried", medium: "nervous", high: "scared" },
-    tired:       { low: "tired", medium: "sleepy", high: "exhausted" },
-    smug:        { low: "confident", medium: "smug", high: "arrogant" },
-    pout:        { low: "pout", medium: "pouting", high: "sulking" },
-    serious:     { low: "closed_mouth", medium: "serious", high: "frown" },
-    gentle:      { low: "soft_smile", medium: "gentle_smile", high: "warm_smile" }
-};
-
-const POSE_PRESETS = {
-    standing:       "standing",
-    sitting:        "sitting, stool",
-    leaning:        "leaning_forward",
-    lying:          "lying",
-    kneeling:       "kneeling",
-    arms_crossed:   "crossed_arms",
-    hand_on_hip:    "hand_on_hip",
-    hands_together: "hands_together"
-};
-
-const ACTION_PRESETS = {
-    waving:     "waving",
-    pointing:   "pointing",
-    thinking:   "hand_on_chin",
-    eating:     "eating",
-    drinking:   "drinking",
-    reading:    "reading",
-    hugging:    "hugging",
-    gesturing:  "outstretched_arm"
-};
-
-// Validate and repair extracted state - fix invalid fields instead of falling back entirely to neutral
-function validateAndRepairState(stateJson) {
+// Validate and repair scene JSON fields
+function validateAndRepairSceneState(sceneJson) {
     let repaired = false;
 
-    if (!stateJson.emotion || !EMOTION_PRESETS[stateJson.emotion]) {
-        console.warn(`[Image-gen-kazuma] Unknown emotion "${stateJson.emotion}", defaulting to neutral`);
-        stateJson.emotion = "neutral";
+    const VALID_TIMES = ['morning', 'day', 'afternoon', 'evening', 'night', 'dawn', 'dusk'];
+    const VALID_WEATHER = ['clear', 'cloudy', 'rain', 'snow', 'fog', 'storm', 'wind', 'none'];
+
+    if (!sceneJson.location || typeof sceneJson.location !== 'string') {
+        console.warn(`[${extensionName}] Missing/invalid location, defaulting to indoors`);
+        sceneJson.location = 'indoors';
         repaired = true;
     }
-    if (!stateJson.intensity || !["low", "medium", "high"].includes(stateJson.intensity)) {
-        console.warn(`[Image-gen-kazuma] Invalid intensity "${stateJson.intensity}", defaulting to medium`);
-        stateJson.intensity = "medium";
+    if (!sceneJson.time_of_day || !VALID_TIMES.includes(sceneJson.time_of_day)) {
+        console.warn(`[${extensionName}] Invalid time_of_day "${sceneJson.time_of_day}", defaulting to day`);
+        sceneJson.time_of_day = 'day';
         repaired = true;
     }
-    if (!stateJson.pose || !POSE_PRESETS[stateJson.pose]) {
-        console.warn(`[Image-gen-kazuma] Unknown pose "${stateJson.pose}", defaulting to standing`);
-        stateJson.pose = "standing";
+    if (!sceneJson.weather || !VALID_WEATHER.includes(sceneJson.weather)) {
+        console.warn(`[${extensionName}] Invalid weather "${sceneJson.weather}", defaulting to clear`);
+        sceneJson.weather = 'clear';
         repaired = true;
     }
-    if (stateJson.action && stateJson.action !== "null" && !ACTION_PRESETS[stateJson.action]) {
-        console.warn(`[Image-gen-kazuma] Unknown action "${stateJson.action}", removing`);
-        stateJson.action = null;
+    if (sceneJson.mood && typeof sceneJson.mood !== 'string') {
+        sceneJson.mood = '';
+        repaired = true;
+    }
+    if (sceneJson.key_elements && typeof sceneJson.key_elements !== 'string') {
+        sceneJson.key_elements = '';
         repaired = true;
     }
 
     if (repaired) {
-        console.log(`[Image-gen-kazuma] Repaired state:`, stateJson);
+        console.log(`[${extensionName}] Repaired scene state:`, sceneJson);
     }
 
-    return stateJson;
+    return sceneJson;
 }
-
-// Framing is now built dynamically in buildSpritePrompt() based on useFullBody setting
 
 /* --- TAG POST-PROCESSING WITH BOORU VALIDATION --- */
 
@@ -3756,108 +3752,59 @@ const BACKGROUND_TAGS = new Set([
     'underlighting', 'depth_of_field', 'dark_clouds'
 ]);
 
-// Scene Persistence: Clothing tags (curated subset of VALID_BOORU_TAGS)
-const CLOTHING_TAGS = new Set([
-    'shirt', 't-shirt', 'dress_shirt', 'blouse', 'tank_top', 'crop_top',
-    'tube_top', 'sweater', 'hoodie', 'cardigan', 'jacket', 'coat',
-    'blazer', 'vest', 'dress', 'sundress', 'gown', 'wedding_dress',
-    'evening_gown', 'skirt', 'miniskirt', 'pleated_skirt', 'long_skirt', 'pants',
-    'jeans', 'shorts', 'short_shorts', 'bike_shorts', 'school_uniform', 'military_uniform',
-    'maid', 'nurse', 'police', 'sailor_collar', 'serafuku', 'bikini',
-    'swimsuit', 'one-piece_swimsuit', 'school_swimsuit', 'kimono', 'yukata', 'japanese_clothes',
-    'chinese_clothes', 'armor', 'cape', 'cloak', 'robe', 'pajamas',
-    'nightgown', 'lingerie', 'underwear', 'bra', 'panties', 'apron',
-    'overalls', 'bodysuit', 'jumpsuit', 'leotard', 'necktie', 'bow',
-    'ribbon', 'scarf', 'gloves', 'hat', 'boots', 'shoes',
-    'sandals', 'high_heels', 'sneakers', 'thighhighs', 'pantyhose', 'kneehighs',
-    'socks', 'nude', 'topless', 'bare_shoulders', 'bare_legs', 'towel',
-    'sports_bra', 'gym_uniform', 'polo_shirt', 'hawaiian_shirt', 'flannel', 'turtleneck',
-    'bandeau', 'bustier', 'corset', 'camisole', 'off-shoulder_shirt', 'sleeveless_shirt',
-    'cropped_shirt', 'collared_shirt', 'open_shirt', 'raglan_sleeves', 'puffy_sleeves', 'long_sleeves',
-    'short_sleeves', 'sleeveless', 'strapless', 'backless_outfit', 'cargo_pants', 'sweatpants',
-    'leggings', 'capri_pants', 'harem_pants', 'pencil_skirt', 'denim_shorts', 'gym_shorts',
-    'high-waist_skirt', 'bell-bottoms', 'frilled_skirt', 'layered_skirt', 'plaid_skirt', 'checkered_skirt',
-    'striped_skirt', 'yoga_pants', 'track_pants', 'cocktail_dress', 'strapless_dress', 'backless_dress',
-    'mermaid_dress', 'lolita_fashion', 'gothic_lolita', 'sweet_lolita', 'classic_lolita', 'pinafore_dress',
-    'frilled_dress', 'layered_dress', 'parka', 'trench_coat', 'denim_jacket', 'leather_jacket',
-    'fur_coat', 'poncho', 'shawl', 'stole', 'fur_trim', 'hood',
-    'hooded_jacket', 'lab_coat', 'letterman_jacket', 'bomber_jacket', 'suit', 'tuxedo',
-    'business_suit', 'track_jacket', 'overcoat', 'loafers', 'oxfords', 'pumps',
-    'flip-flops', 'slippers', 'combat_boots', 'riding_boots', 'thigh_boots', 'knee_boots',
-    'ankle_boots', 'snow_boots', 'mary_janes', 'dress_shoes', 'barefoot', 'no_shoes',
-    'shoe_soles', 'roller_skates', 'ice_skates', 'geta', 'zouri', 'uwabaki',
-    'waraji', 'choker', 'necklace', 'pendant', 'bracelet', 'bangle',
-    'earrings', 'ring', 'watch', 'wristwatch', 'belt', 'suspenders',
-    'tie_clip', 'brooch', 'hairpin', 'headband', 'hairband', 'tiara',
-    'crown', 'hair_ribbon', 'hair_bow', 'hair_flower', 'hair_ornament', 'scrunchie',
-    'ponytail_holder', 'glasses', 'sunglasses', 'monocle', 'goggles', 'mask',
-    'gas_mask', 'surgical_mask', 'bag', 'handbag', 'backpack', 'messenger_bag',
-    'satchel', 'briefcase', 'wallet', 'pouch', 'umbrella', 'parasol',
-    'folding_fan', 'collar', 'chain', 'leash', 'armband', 'armlet',
-    'anklet', 'wristband', 'sweatband', 'bandana', 'pocket_watch', 'locket',
-    'amulet', 'talisman', 'epaulettes', 'shoulder_pads', 'pauldrons', 'beret',
-    'beanie', 'fedora', 'top_hat', 'cowboy_hat', 'sun_hat', 'straw_hat',
-    'witch_hat', 'wizard_hat', 'santa_hat', 'party_hat', 'nurse_cap', 'chef_hat',
-    'baseball_cap', 'helmet', 'hard_hat', 'veil', 'headdress', 'headpiece',
-    'maid_headdress', 'animal_ears', 'cat_ears', 'dog_ears', 'fox_ears', 'rabbit_ears',
-    'wolf_ears', 'horse_ears', 'fake_animal_ears', 'animal_ear_headphones', 'halo', 'horns',
-    'antlers', 'ahoge', 'hair_over_one_eye', 'blunt_bangs', 'thong', 'g-string',
-    'briefs', 'boxers', 'garter_belt', 'garter_straps', 'string_bikini', 'micro_bikini',
-    'monokini', 'tankini', 'competition_swimsuit', 'swim_trunks', 'highleg', 'highleg_leotard',
-    'lowleg', 'lowleg_panties', 'fundoshi', 'loincloth', 'sarong', 'negligee',
-    'babydoll', 'chemise', 'teddy_(lingerie)', 'corset', 'bustier', 'undressing',
-    'clothes_lift', 'shirt_lift', 'skirt_lift', 'dress_lift', 'clothes_pull', 'shirt_pull',
-    'skirt_pull', 'pants_pull', 'open_clothes', 'open_shirt', 'open_jacket', 'open_coat',
-    'unbuttoned', 'unzipped', 'torn_clothes', 'torn_shirt', 'torn_dress', 'torn_pants',
-    'wet_clothes', 'wet_shirt', 'wet_dress', 'tight_clothes', 'tight_shirt', 'tight_dress',
-    'tight_pants', 'oversized_clothes', 'oversized_shirt', 'clothes_around_waist', 'jacket_around_waist', 'off_shoulder',
-    'single_bare_shoulder', 'cross-laced_clothes', 'lace-up', 'lace_trim', 'frills', 'polka_dot',
-    'floral_print', 'camouflage', 'leopard_print', 'zebra_print', 'cheerleader', 'playboy_bunny',
-    'maid_apron', 'sailor_dress', 'sailor_shirt', 'witch', 'angel', 'santa_costume',
-    'santa_dress', 'halloween_costume', 'vampire', 'pirate', 'cowboy', 'flight_attendant',
-    'waitress', 'bartender', 'firefighter', 'astronaut', 'pilot', 'detective',
-    'ninja', 'samurai', 'gladiator', 'knight', 'paladin', 'idol',
-    'idol_clothes', 'magical_girl', 'sailor_senshi_uniform', 'plugsuit', 'racing_suit', 'track_suit',
-    'track_jacket', 'track_pants', 'gym_shorts', 'gym_shirt', 'karate_gi', 'tutu',
-    'tennis_uniform', 'basketball_uniform', 'soccer_uniform', 'baseball_uniform', 'volleyball_uniform', 'zipper',
-    'buckle', 'clasp', 'pocket', 'collar', 'dart', 'shoulder_strap',
-    'spaghetti_strap', 'drawstring', 'embroidery', 'sequins', 'tassel', 'hood_down',
-    'hood_up', 'zipper_pull_tab',
-    'fingerless_gloves', 'revealing_clothes'
+// Scene Persistence: Location tags (curated subset of VALID_BOORU_TAGS)
+const LOCATION_TAGS = new Set([
+    'indoors', 'outdoors', 'bedroom', 'bathroom', 'kitchen', 'living_room',
+    'classroom', 'hallway', 'rooftop', 'balcony', 'office', 'library',
+    'hospital', 'church', 'temple', 'shrine', 'castle', 'dungeon',
+    'cave', 'ruins', 'alley', 'street', 'city', 'town',
+    'village', 'park', 'garden', 'forest', 'jungle', 'mountain',
+    'hill', 'cliff', 'beach', 'ocean', 'lake', 'river',
+    'waterfall', 'pool', 'desert', 'field', 'meadow', 'farm',
+    'bridge', 'train', 'bus', 'car_interior', 'space', 'underwater',
+    'cafe', 'restaurant', 'bar_(place)', 'shop', 'market', 'stadium',
+    'arena', 'stage', 'gym', 'dojo', 'laboratory', 'prison',
+    'throne_room', 'tent', 'campfire', 'locker_room', 'closet', 'greenhouse',
+    'garage', 'warehouse', 'factory', 'studio', 'theater', 'museum',
+    'hotel_room', 'elevator', 'infirmary', 'changing_room', 'fitting_room',
+    'cockpit', 'recording_studio', 'sauna', 'onsen', 'highway', 'parking_lot',
+    'pier', 'dock', 'harbor', 'airport', 'train_station', 'bus_stop',
+    'graveyard', 'amusement_park', 'zoo', 'aquarium', 'lighthouse', 'canal',
+    'volcano', 'canyon', 'valley', 'island', 'shore', 'riverbank',
+    'fountain', 'overpass', 'tunnel', 'construction_site', 'junkyard',
+    'wheat_field', 'playground', 'track_and_field', 'skating_rink', 'picnic',
+    'crosswalk', 'sidewalk', 'road', 'path', 'flower_field', 'bamboo_forest',
+    'cherry_blossoms', 'pagoda', 'cathedral', 'tower', 'skyscraper', 'apartment',
+    'building', 'house', 'hut', 'cabin', 'treehouse', 'gazebo',
+    'veranda', 'porch', 'conservatory', 'cave_interior', 'ballroom',
+    'courtyard', 'plaza', 'monastery', 'corridor', 'lobby'
 ]);
 
-// Scene Persistence: Position/pose tags (curated subset of VALID_BOORU_TAGS)
-const POSITION_TAGS = new Set([
-    'sitting', 'standing', 'lying', 'kneeling', 'crouching', 'squatting',
-    'leaning', 'leaning_forward', 'leaning_back', 'leaning_to_the_side',
-    'on_bed', 'on_chair', 'on_couch', 'on_floor', 'on_ground', 'on_table',
-    'on_desk', 'on_stomach', 'on_back', 'on_side', 'on_knees',
-    'sitting_on_bed', 'sitting_on_chair', 'sitting_on_couch', 'sitting_on_floor',
-    'sitting_on_table', 'sitting_on_desk', 'sitting_on_lap', 'sitting_on_person',
-    'seiza', 'wariza', 'indian_style', 'crossed_legs', 'legs_together', 'legs_apart',
-    'spread_legs', 'legs_up', 'leg_up', 'leg_lift', 'knees_together', 'knees_apart',
-    'fetal_position', 'curled_up', 'hugging_knees', 'hugging_own_legs',
-    'all_fours', 'hands_and_knees', 'crawling', 'prone', 'supine',
-    'bent_over', 'bending', 'hunched_over', 'slouching', 'arched_back',
-    'reclining', 'lounging', 'relaxed', 'stretched', 'stretching',
-    'standing_on_one_leg', 'tiptoes', 'walking', 'running', 'jumping',
-    'floating', 'falling', 'flying', 'hovering', 'suspended',
-    'against_wall', 'against_glass', 'against_tree', 'against_fence',
-    'arms_up', 'arms_behind_back', 'arms_behind_head', 'arms_at_sides',
-    'arms_crossed', 'hand_on_hip', 'hands_on_hips', 'hand_on_own_chest',
-    'hand_between_legs', 'hands_between_legs', 'hand_on_own_face',
-    'head_tilt', 'head_down', 'head_back', 'looking_up', 'looking_down',
-    'looking_away', 'looking_to_the_side', 'looking_back', 'looking_at_viewer',
-    'upside-down', 'sideways', 'twisted_torso', 'contrapposto',
-    'straddling', 'mounting', 'riding', 'piggyback', 'carrying', 'being_carried',
-    'lap_pillow', 'head_on_pillow', 'hugging_pillow', 'under_covers', 'in_water',
-    'bathing', 'showering', 'sleeping', 'waking_up', 'yawning',
-    'eating', 'drinking', 'reading', 'writing', 'typing', 'using_phone',
-    'gaming', 'cooking', 'cleaning', 'working', 'studying',
-    'exercising', 'dancing', 'singing', 'playing_instrument', 'posing',
-    'fighting_stance', 'defensive_stance', 'action_pose', 'dynamic_pose',
-    'victory_pose', 'peace_sign', 'thumbs_up', 'waving', 'salute',
-    'curtsy', 'bow', 'bowing', 'praying', 'meditating'
+// Scene Persistence: Atmosphere/lighting tags (curated subset of VALID_BOORU_TAGS)
+const ATMOSPHERE_TAGS = new Set([
+    'rain', 'snowing', 'fog', 'storm', 'wind', 'blizzard', 'thunder',
+    'lightning', 'overcast', 'clear_sky', 'dust', 'sandstorm', 'rainbow',
+    'aurora', 'cloudy_sky', 'cloudy', 'snowflakes', 'snowstorm', 'tornado',
+    'meteor', 'shooting_star', 'comet', 'eclipse',
+    'candlelight', 'lantern', 'neon_lights', 'spotlight', 'backlighting',
+    'lens_flare', 'dim_lighting', 'light_rays', 'light_particles',
+    'shadow', 'silhouette', 'reflection', 'glowing', 'fire', 'bonfire',
+    'torch', 'lamp', 'chandelier', 'light_bulb', 'fireflies', 'bioluminescence',
+    'dappled_sunlight', 'sunbeam', 'sun_glare', 'hanging_light', 'stage_lights',
+    'underlighting', 'depth_of_field', 'dark_clouds',
+    'petals', 'falling_petals', 'falling_leaves', 'autumn_leaves',
+    'cherry_blossom_petals', 'snow',
+    'dark', 'bright', 'shade', 'moonlight', 'sunlight'
+]);
+
+// Scene Persistence: Time-of-day tags (curated subset of VALID_BOORU_TAGS)
+const TIME_TAGS = new Set([
+    'sunset', 'sunrise', 'night', 'day', 'evening', 'morning',
+    'twilight', 'dusk', 'dawn', 'midnight', 'noon', 'afternoon',
+    'starry_sky', 'night_sky', 'blue_sky', 'orange_sky', 'red_sky',
+    'purple_sky', 'pink_sky', 'gradient_sky',
+    'crescent_moon', 'full_moon', 'half_moon', 'sun', 'moon',
+    'constellation', 'golden_hour'
 ]);
 
 // Alias corrections (extracted from danbooru - maps common variations to canonical booru tags)
@@ -11017,7 +10964,10 @@ const BAD_TAG_PATTERNS = [
     /masterpiece/i, /best_quality/i, /highres/i, /quality/i,   // quality tags
     /render$/i, /3d_/i, /digital$/i,                           // style tags
     /circuitry/i, /algorithm/i, /data$/i,                      // tech abstract
-    /hum$/i, /feeling$/i                                        // more abstract
+    /hum$/i, /feeling$/i,                                       // more abstract
+    // Character-specific patterns (background-only mode)
+    /^\d+girl/i, /^\d+boy/i, /^\d+other/i, /^solo$/i, /^ohwx$/i,
+    /breast/i, /blush$/i, /smile$/i
 ];
 
 function resolveTag(tag) {
@@ -11035,25 +10985,20 @@ function resolveTag(tag) {
     return null;
 }
 
-function cleanTags(rawTags, charName) {
+function cleanTags(rawTags) {
     let tags = rawTags
         .split(',')
         .map(t => t.trim().toLowerCase().replace(/\s+/g, '_'))
         .filter(t => t.length > 1)
-        // Filter out bad patterns
+        // Filter out bad patterns (includes character-specific patterns)
         .filter(t => !BAD_TAG_PATTERNS.some(pattern => pattern.test(t)))
         // Resolve tags with suffix-matching fallback
         .map(t => resolveTag(t))
         .filter(t => t !== null)
         // Dedupe
         .filter((t, i, arr) => arr.indexOf(t) === i)
-        // Max 15 tags
-        .slice(0, 15);
-
-    // Always inject 1girl at the start
-    if (!tags.includes('1girl')) {
-        tags.unshift('1girl');
-    }
+        // Max 25 tags (backgrounds benefit from more descriptive tags)
+        .slice(0, 25);
 
     return tags.join(', ');
 }
@@ -11063,54 +11008,51 @@ function applyPersistence(tagString) {
     if (!s.persistenceEnabled) return tagString;
 
     const state = getSceneState();
-    const bgEffective = getEffectiveStateTags('background');
-    const clothEffective = getEffectiveStateTags('clothing');
-    const posEffective = getEffectiveStateTags('position');
+    const locEffective = getEffectiveStateTags('location');
+    const atmEffective = getEffectiveStateTags('atmosphere');
+    const timEffective = getEffectiveStateTags('time');
 
-    if (bgEffective.length === 0 && clothEffective.length === 0 && posEffective.length === 0) return tagString;
+    if (locEffective.length === 0 && atmEffective.length === 0 && timEffective.length === 0) return tagString;
 
     let tags = tagString.split(',').map(t => t.trim()).filter(t => t.length > 0);
 
-    const hasBgTag = tags.some(t => BACKGROUND_TAGS.has(t));
-    const hasClothTag = tags.some(t => CLOTHING_TAGS.has(t));
-    const hasPosTag = tags.some(t => POSITION_TAGS.has(t));
+    const hasLocTag = tags.some(t => LOCATION_TAGS.has(t));
+    const hasAtmTag = tags.some(t => ATMOSPHERE_TAGS.has(t));
+    const hasTimTag = tags.some(t => TIME_TAGS.has(t));
 
     // Check if categories are locked or have manual override
-    const bgLocked = state.background.locked || (state.background.manualOverride && state.background.manualOverride.trim());
-    const clothLocked = state.clothing.locked || (state.clothing.manualOverride && state.clothing.manualOverride.trim());
-    const posLocked = state.position.locked || (state.position.manualOverride && state.position.manualOverride.trim());
+    const locLocked = state.location.locked || (state.location.manualOverride && state.location.manualOverride.trim());
+    const atmLocked = state.atmosphere.locked || (state.atmosphere.manualOverride && state.atmosphere.manualOverride.trim());
+    const timLocked = state.time.locked || (state.time.manualOverride && state.time.manualOverride.trim());
 
     let toInject = [];
 
     // For locked/override categories: remove existing tags of that type and replace with effective
-    if (bgLocked && bgEffective.length > 0) {
-        tags = tags.filter(t => !BACKGROUND_TAGS.has(t));
-        toInject.push(...bgEffective);
-    } else if (!hasBgTag && bgEffective.length > 0) {
-        // Not locked and no LLM bg tags: inject saved
-        toInject.push(...bgEffective);
+    if (locLocked && locEffective.length > 0) {
+        tags = tags.filter(t => !LOCATION_TAGS.has(t));
+        toInject.push(...locEffective);
+    } else if (!hasLocTag && locEffective.length > 0) {
+        toInject.push(...locEffective);
     }
 
-    if (clothLocked && clothEffective.length > 0) {
-        tags = tags.filter(t => !CLOTHING_TAGS.has(t));
-        toInject.push(...clothEffective);
-    } else if (!hasClothTag && clothEffective.length > 0) {
-        // Not locked and no LLM cloth tags: inject saved
-        toInject.push(...clothEffective);
+    if (atmLocked && atmEffective.length > 0) {
+        tags = tags.filter(t => !ATMOSPHERE_TAGS.has(t));
+        toInject.push(...atmEffective);
+    } else if (!hasAtmTag && atmEffective.length > 0) {
+        toInject.push(...atmEffective);
     }
 
-    if (posLocked && posEffective.length > 0) {
-        tags = tags.filter(t => !POSITION_TAGS.has(t));
-        toInject.push(...posEffective);
-    } else if (!hasPosTag && posEffective.length > 0) {
-        // Not locked and no LLM position tags: inject saved
-        toInject.push(...posEffective);
+    if (timLocked && timEffective.length > 0) {
+        tags = tags.filter(t => !TIME_TAGS.has(t));
+        toInject.push(...timEffective);
+    } else if (!hasTimTag && timEffective.length > 0) {
+        toInject.push(...timEffective);
     }
 
     if (toInject.length === 0) return tags.join(', ');
 
-    // Inject tags, respecting the 15 tag limit
-    const remaining = 15 - tags.length;
+    // Inject tags, respecting the 25 tag limit
+    const remaining = 25 - tags.length;
     if (remaining > 0) {
         const inject = toInject.filter(t => !tags.includes(t)).slice(0, remaining);
         tags.push(...inject);
@@ -11119,63 +11061,79 @@ function applyPersistence(tagString) {
     return tags.join(', ');
 }
 
-/* --- SPRITE PROMPT BUILDER --- */
-function buildSpritePrompt(stateJson) {
-    const s = extension_settings[extensionName];
+/* --- BACKGROUND PROMPT BUILDER --- */
+function buildBackgroundPrompt(sceneJson) {
     const parts = [];
 
-    // 1. LoRA trigger (hardcoded for now)
-    parts.push('ohwx');
+    // === COMPONENT 1: Environment Base ===
+    parts.push('no_humans', 'scenery', 'detailed_environment');
+    // Location
+    const location = sceneJson.location.toLowerCase().replace(/\s+/g, '_');
+    parts.push(resolveTag(location) || location);
+    parts.push('clear_composition');
 
-    // 2. Character count
-    parts.push('1girl');
-
-    // 3. Emotion (with intensity)
-    const emotionPreset = EMOTION_PRESETS[stateJson.emotion];
-    if (emotionPreset) {
-        const emotionTag = emotionPreset[stateJson.intensity] || emotionPreset.medium;
-        parts.push(emotionTag);
+    // === COMPONENT 2: Architectural / Natural Elements ===
+    if (sceneJson.key_elements) {
+        sceneJson.key_elements.split(',').map(t => t.trim().replace(/\s+/g, '_'))
+            .filter(t => t).forEach(t => {
+                parts.push(resolveTag(t) || t);  // Keep unresolved — Illustrious handles natural language
+            });
     }
 
-    // 4. Pose
-    const poseTag = POSE_PRESETS[stateJson.pose];
-    if (poseTag) {
-        parts.push(poseTag);
+    // === COMPONENT 3: Lighting & Atmosphere ===
+    // Time of day
+    const TIME_MAPPINGS = {
+        'morning': ['morning', 'sunlight', 'blue_sky'],
+        'day':     ['day', 'blue_sky', 'sunlight'],
+        'afternoon': ['afternoon', 'sunlight', 'warm_lighting'],
+        'evening': ['evening', 'orange_sky', 'sunset', 'warm_ambient_lighting'],
+        'night':   ['night', 'night_sky', 'moonlight', 'dark'],
+        'dawn':    ['dawn', 'sunrise', 'gradient_sky', 'atmospheric_haze'],
+        'dusk':    ['dusk', 'twilight', 'purple_sky', 'soft_shadows']
+    };
+    parts.push(...(TIME_MAPPINGS[sceneJson.time_of_day] || ['day']));
+
+    // Weather
+    const WEATHER_MAPPINGS = {
+        'clear':  ['clear_sky'],
+        'cloudy': ['cloudy', 'overcast'],
+        'rain':   ['rain', 'wet', 'puddle'],
+        'snow':   ['snowing', 'snow'],
+        'fog':    ['fog', 'mist', 'atmospheric_haze'],
+        'storm':  ['storm', 'lightning', 'dark_clouds', 'dramatic_lighting'],
+        'wind':   ['wind', 'dynamic_clouds'],
+        'none':   []
+    };
+    parts.push(...(WEATHER_MAPPINGS[sceneJson.weather] || []));
+
+    // Mood / lighting (from LLM extraction)
+    if (sceneJson.mood) {
+        sceneJson.mood.split(',').map(t => t.trim().replace(/\s+/g, '_'))
+            .filter(t => t).forEach(t => { parts.push(resolveTag(t) || t); });
     }
 
-    // 5. Action (optional)
-    if (stateJson.action && stateJson.action !== 'null' && ACTION_PRESETS[stateJson.action]) {
-        parts.push(ACTION_PRESETS[stateJson.action]);
-    }
+    // === QUALITY TAGS (Illustrious — always at end) ===
+    parts.push(...ILLUSTRIOUS_QUALITY_TAGS.split(', '));
 
-    // 6. Clothing override (manual only - LoRA has default outfit)
-    const state = getSceneState();
-    const clothOverride = state.clothing?.manualOverride?.trim();
-    if (clothOverride) {
-        const clothTags = clothOverride.split(',').map(t => t.trim()).filter(t => t.length > 0);
-        parts.push(...clothTags);
-    }
-
-    // 7. Framing (upper_body or full_body based on setting)
-    const framing = s.useFullBody ? 'full_body' : 'upper_body';
-    parts.push(`${framing}, simple_background, looking_at_viewer`);
-
-    return parts.join(', ');
+    // Dedupe, apply persistence
+    let promptStr = parts.filter((t, i, arr) => arr.indexOf(t) === i).join(', ');
+    promptStr = applyPersistence(promptStr);
+    return promptStr;
 }
 
-async function generateSpriteState(sceneText) {
+async function generateScenePrompt(sceneText) {
     const s = extension_settings[extensionName];
 
     // Validate configuration
     if (!s.tagApiEndpoint || !s.tagModel) {
-        throw new Error("Tag API not configured. Please set endpoint and model.");
+        throw new Error("Scene Extraction API not configured. Please set endpoint and model.");
     }
 
-    // Build messages array - simple and direct
+    // Build messages array
     const messages = [
         {
             role: 'system',
-            content: TAG_GEN_CONFIG.systemPrompt
+            content: SCENE_TAG_GEN_CONFIG.systemPrompt
         },
         {
             role: 'user',
@@ -11184,22 +11142,22 @@ async function generateSpriteState(sceneText) {
     ];
 
     // Add assistant prefill if configured (helps models output JSON directly)
-    if (TAG_GEN_CONFIG.assistantPrefill) {
+    if (SCENE_TAG_GEN_CONFIG.assistantPrefill) {
         messages.push({
             role: 'assistant',
-            content: TAG_GEN_CONFIG.assistantPrefill
+            content: SCENE_TAG_GEN_CONFIG.assistantPrefill
         });
     }
 
-    // Build request body using hardcoded settings
+    // Build request body
     const requestBody = {
         model: s.tagModel,
         messages: messages,
-        max_tokens: TAG_GEN_CONFIG.max_tokens,
-        temperature: TAG_GEN_CONFIG.temperature,
-        top_p: TAG_GEN_CONFIG.top_p,
-        frequency_penalty: TAG_GEN_CONFIG.frequency_penalty,
-        presence_penalty: TAG_GEN_CONFIG.presence_penalty
+        max_tokens: SCENE_TAG_GEN_CONFIG.max_tokens,
+        temperature: SCENE_TAG_GEN_CONFIG.temperature,
+        top_p: SCENE_TAG_GEN_CONFIG.top_p,
+        frequency_penalty: SCENE_TAG_GEN_CONFIG.frequency_penalty,
+        presence_penalty: SCENE_TAG_GEN_CONFIG.presence_penalty
     };
 
     // Make API request
@@ -11216,7 +11174,7 @@ async function generateSpriteState(sceneText) {
 
     if (!response.ok) {
         const error = await response.text();
-        throw new Error(`State API request failed (${response.status}): ${error}`);
+        throw new Error(`Scene API request failed (${response.status}): ${error}`);
     }
 
     const data = await response.json();
@@ -11230,8 +11188,8 @@ async function generateSpriteState(sceneText) {
     result = result.replace(/<\/?think>/gi, '').trim();
 
     // Prepend the assistant prefill only if model continued from it (doesn't start with {)
-    if (TAG_GEN_CONFIG.assistantPrefill && !result.trim().startsWith('{')) {
-        result = TAG_GEN_CONFIG.assistantPrefill + result;
+    if (SCENE_TAG_GEN_CONFIG.assistantPrefill && !result.trim().startsWith('{')) {
+        result = SCENE_TAG_GEN_CONFIG.assistantPrefill + result;
     }
 
     // Extract JSON from the response (handle markdown code blocks)
@@ -11240,7 +11198,6 @@ async function generateSpriteState(sceneText) {
     if (jsonMatch) {
         jsonStr = jsonMatch[1].trim();
     } else {
-        // Try to find raw JSON object
         const objMatch = result.match(/\{[\s\S]*?\}/);
         if (objMatch) {
             jsonStr = objMatch[0];
@@ -11248,28 +11205,41 @@ async function generateSpriteState(sceneText) {
     }
 
     // Parse JSON
-    let stateJson;
+    let sceneJson;
     try {
-        stateJson = JSON.parse(jsonStr);
+        sceneJson = JSON.parse(jsonStr);
     } catch (e) {
-        console.error(`[${extensionName}] Failed to parse JSON: ${jsonStr}`);
-        // Fallback to neutral state
-        stateJson = { emotion: 'neutral', intensity: 'medium', pose: 'standing', action: null };
+        console.error(`[${extensionName}] Failed to parse scene JSON: ${jsonStr}`);
+        // Fallback to default scene
+        sceneJson = { location: 'indoors', time_of_day: 'day', weather: 'clear', mood: '', key_elements: '' };
     }
 
     // Validate and repair any invalid fields
-    stateJson = validateAndRepairState(stateJson);
+    sceneJson = validateAndRepairSceneState(sceneJson);
 
-    console.log(`[${extensionName}] Extracted state:`, stateJson);
+    console.log(`[${extensionName}] Extracted scene:`, sceneJson);
 
-    // Build sprite prompt from presets
-    const prompt = buildSpritePrompt(stateJson);
+    // Update scene state for persistence
+    const allTags = [];
+    if (sceneJson.location) allTags.push(sceneJson.location.replace(/\s+/g, '_'));
+    if (sceneJson.key_elements) {
+        sceneJson.key_elements.split(',').map(t => t.trim().replace(/\s+/g, '_')).filter(t => t).forEach(t => allTags.push(t));
+    }
+    if (sceneJson.mood) {
+        sceneJson.mood.split(',').map(t => t.trim().replace(/\s+/g, '_')).filter(t => t).forEach(t => allTags.push(t));
+    }
+    if (sceneJson.time_of_day) allTags.push(sceneJson.time_of_day);
+    if (sceneJson.weather && sceneJson.weather !== 'none') allTags.push(sceneJson.weather);
+    updateSceneState(allTags);
+
+    // Build background prompt
+    const prompt = buildBackgroundPrompt(sceneJson);
     console.log(`[${extensionName}] Generated prompt: ${prompt}`);
 
     return prompt;
 }
 
-/* --- SPRITE MODE GENERATION LOGIC --- */
+/* --- BACKGROUND GENERATION LOGIC --- */
 async function onGeneratePrompt() {
     if (!extension_settings[extensionName].enabled) return;
     const context = getContext();
@@ -11279,24 +11249,24 @@ async function onGeneratePrompt() {
 
     // Validate API configuration
     if (!s.tagApiEndpoint || !s.tagModel) {
-        toastr.error("Tag API not configured. Please set endpoint and model.");
+        toastr.error("Scene Extraction API not configured. Please set endpoint and model.");
         return;
     }
 
     // [START PROGRESS]
-    showKazumaProgress("Extracting State...");
+    showKazumaProgress("Extracting Scene...");
 
     try {
-        // Get last 3 messages for emotional context (or fewer if chat is short)
-        const NUM_CONTEXT_MESSAGES = 3;
+        // Get last 5 messages for scene context (backgrounds need more context than emotions)
+        const NUM_CONTEXT_MESSAGES = 5;
         const recentMessages = context.chat.slice(-NUM_CONTEXT_MESSAGES)
             .map(msg => `${msg.is_user ? 'User' : 'Character'}: ${msg.mes}`)
             .join('\n\n');
 
-        const sceneText = `Analyze the conversation below. Focus on the CHARACTER's FINAL emotional state in the last message.\n\n${recentMessages}`;
+        const sceneText = `Analyze the conversation below. Determine the CURRENT SCENE/SETTING where the action is taking place.\n\n${recentMessages}`;
 
-        // Single stage: Extract state and build sprite prompt
-        let generatedText = await generateSpriteState(sceneText);
+        // Extract scene and build background prompt
+        let generatedText = await generateScenePrompt(sceneText);
 
         if (s.debugPrompt) {
             // Hide progress while user is confirming
@@ -11412,7 +11382,7 @@ async function onImageSwiped(data) {
 
     if (direction !== "right") return;
     if (settings && settings.image_overswipe !== "generate") return;
-    if (message.name !== "Image Gen Kazuma") return;
+    if (message.name !== "VN Background Gen") return;
 
     const media = message.extra?.media || [];
     const idx = message.extra?.media_index || 0;
@@ -11423,7 +11393,7 @@ async function onImageSwiped(data) {
     if (!mediaObj || !mediaObj.title) return;
 
     const prompt = mediaObj.title;
-    toastr.info("New variation...", "Image Gen Kazuma");
+    toastr.info("New variation...", "VN Background Gen");
     await generateWithComfy(prompt, { message: message, element: $(element) });
 }
 
@@ -11491,6 +11461,36 @@ function compressImage(base64Str, quality = 0.9) {
     });
 }
 
+// --- SAVE AS BACKGROUND ---
+async function saveAsBackground(base64FullURL, format) {
+    try {
+        const fetchRes = await fetch(base64FullURL);
+        const blob = await fetchRes.blob();
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const filename = `vnbg_${timestamp}.${format === 'jpeg' ? 'jpg' : format}`;
+
+        const formData = new FormData();
+        formData.set('avatar', blob, filename);
+
+        const uploadRes = await fetch('/api/backgrounds/upload', {
+            method: 'POST',
+            headers: getRequestHeaders({ omitContentType: true }),
+            body: formData,
+            cache: 'no-cache',
+        });
+
+        if (!uploadRes.ok) throw new Error('Background upload failed');
+        const bgName = await uploadRes.text();
+
+        // Set as active background
+        $('#bg1').css('background-image', `url("backgrounds/${encodeURIComponent(bgName)}")`);
+        toastr.success(`Background set: ${bgName}`, "VN Background Gen");
+    } catch (err) {
+        console.error(`[${extensionName}] saveAsBackground failed:`, err);
+        toastr.error(`Failed to set background: ${err.message}`);
+    }
+}
+
 // --- SAVE TO SERVER ---
 async function insertImageToChat(imgUrl, promptText, target = null) {
     try {
@@ -11504,8 +11504,13 @@ async function insertImageToChat(imgUrl, promptText, target = null) {
             format = "jpeg";
         }
 
-        // --- POPOUT ROUTING ---
+        // --- AUTO-SET AS BACKGROUND ---
         const s = extension_settings[extensionName];
+        if (s.autoSetBackground && !target) {
+            await saveAsBackground(base64FullURL, format);
+        }
+
+        // --- POPOUT ROUTING ---
         if (s.usePopout && !target) {
             // Update popout with the image
             updatePopoutImage(base64FullURL, promptText, base64FullURL);
@@ -11554,7 +11559,7 @@ async function insertImageToChat(imgUrl, promptText, target = null) {
             toastr.success("Gallery updated!");
         } else {
             const newMessage = {
-                name: "Image Gen Kazuma", is_user: false, is_system: true, send_date: Date.now(),
+                name: "VN Background Gen", is_user: false, is_system: true, send_date: Date.now(),
                 mes: "", extra: { media: [mediaAttachment], media_display: "gallery", media_index: 0, inline_image: false }, force_avatar: "img/five.png"
             };
             context.chat.push(newMessage);
@@ -11598,9 +11603,13 @@ jQuery(async () => {
         $("#kazuma_tag_api_key").on("input", (e) => { extension_settings[extensionName].tagApiKey = $(e.target).val(); saveSettingsDebounced(); });
         $("#kazuma_tag_model").on("input", (e) => { extension_settings[extensionName].tagModel = $(e.target).val(); saveSettingsDebounced(); });
 
-        // Sprite Mode event handlers
-        $("#kazuma_full_body").on("change", (e) => { extension_settings[extensionName].useFullBody = $(e.target).prop("checked"); saveSettingsDebounced(); });
-        $("#kazuma_persist_reset_cloth").on("click", () => { resetSceneState('clothing'); toastr.info("Clothing override reset.", "Sprite Mode"); });
+        // Background Behavior event handlers
+        $("#kazuma_auto_set_bg").on("change", (e) => { extension_settings[extensionName].autoSetBackground = $(e.target).prop("checked"); saveSettingsDebounced(); });
+
+        // Scene State reset buttons
+        $("#kazuma_persist_reset_location").on("click", () => { resetSceneState('location'); toastr.info("Location reset.", "VN Background Gen"); });
+        $("#kazuma_persist_reset_atmosphere").on("click", () => { resetSceneState('atmosphere'); toastr.info("Atmosphere reset.", "VN Background Gen"); });
+        $("#kazuma_persist_reset_time").on("click", () => { resetSceneState('time'); toastr.info("Time reset.", "VN Background Gen"); });
 
         // Pop-out settings event handlers
         $("#kazuma_popout_toggle").on("click", (e) => { e.stopPropagation(); toggleKazumaPopout(); });
@@ -11704,7 +11713,7 @@ jQuery(async () => {
 
 // Helpers (Condensed)
 function onMessageReceived(id) { if (!extension_settings[extensionName].enabled || !extension_settings[extensionName].autoGenEnabled) return; const chat = getContext().chat; if (!chat || !chat.length) return; if (chat[chat.length - 1].is_user || chat[chat.length - 1].is_system) return; const aiMsgCount = chat.filter(m => !m.is_user && !m.is_system).length; const freq = parseInt(extension_settings[extensionName].autoGenFreq) || 1; if (aiMsgCount % freq === 0) { console.log(`[${extensionName}] Auto-gen...`); setTimeout(onGeneratePrompt, 500); } }
-function createChatButton() { if ($("#kazuma_quick_gen").length > 0) return; const b = `<div id="kazuma_quick_gen" class="interactable" title="Visualize" style="cursor: pointer; width: 35px; height: 35px; display: flex; align-items: center; justify-content: center; margin-right: 5px; opacity: 0.7;"><i class="fa-solid fa-paintbrush fa-lg"></i></div>`; let t = $("#send_but_sheld"); if (!t.length) t = $("#send_textarea"); if (t.length) { t.attr("id") === "send_textarea" ? t.before(b) : t.prepend(b); } }
+function createChatButton() { if ($("#kazuma_quick_gen").length > 0) return; const b = `<div id="kazuma_quick_gen" class="interactable" title="Generate Background" style="cursor: pointer; width: 35px; height: 35px; display: flex; align-items: center; justify-content: center; margin-right: 5px; opacity: 0.7;"><i class="fa-solid fa-mountain-sun fa-lg"></i></div>`; let t = $("#send_but_sheld"); if (!t.length) t = $("#send_textarea"); if (t.length) { t.attr("id") === "send_textarea" ? t.before(b) : t.prepend(b); } }
 async function onFileSelected(e) { const f=e.target.files[0];if(!f)return;const t=await f.text();try{const j=JSON.parse(t),n=prompt("Name:",f.name.replace(".json",""));if(n){extension_settings[extensionName].savedWorkflows[n]=j;extension_settings[extensionName].currentWorkflowName=n;saveSettingsDebounced();populateWorkflows();}}catch{toastr.error("Invalid JSON");}$(e.target).val('');}
 function showKazumaProgress(text = "Processing...") {
     $("#kazuma_progress_text").text(text);

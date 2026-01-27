@@ -4,7 +4,8 @@ Tag Generator for index.js
 ===========================
 
 Parses a Danbooru tag CSV export and injects updated tag data into index.js.
-This updates VALID_BOORU_TAGS, TAG_ALIASES, BACKGROUND_TAGS, and CLOTHING_TAGS.
+This updates VALID_BOORU_TAGS, TAG_ALIASES, BACKGROUND_TAGS, LOCATION_TAGS,
+ATMOSPHERE_TAGS, and TIME_TAGS.
 
 Usage:
     python3 tools/generate_tags.py [--csv PATH] [--threshold N] [--dry-run]
@@ -28,16 +29,16 @@ What it modifies in index.js:
     - VALID_BOORU_TAGS: Set of all valid tags (type-0 with count >= threshold)
     - TAG_ALIASES: Object mapping alias strings to their canonical tag
     - BACKGROUND_TAGS: Curated subset of VALID_BOORU_TAGS for scene persistence
-    - CLOTHING_TAGS: Curated subset of VALID_BOORU_TAGS for clothing persistence
+    - LOCATION_TAGS: Curated subset for location persistence
+    - ATMOSPHERE_TAGS: Curated subset for atmosphere/lighting persistence
+    - TIME_TAGS: Curated subset for time-of-day persistence
 
     The script locates these by searching for their declaration patterns and
     replaces everything between the opening and closing delimiters.
 
 Notes:
-    - BACKGROUND_TAGS and CLOTHING_TAGS candidates are hardcoded in this script.
+    - All persistence tag candidates are hardcoded in this script.
       Only candidates that exist in the generated VALID_BOORU_TAGS are included.
-      To add new persistence tags, add them to the candidate lists in
-      generate_background_tags() or generate_clothing_tags().
     - The script preserves all code before and after the tag data sections.
     - Tags are sorted alphabetically, 8 per line for VALID_BOORU_TAGS,
       6 per line for persistence tags.
@@ -204,159 +205,75 @@ def generate_background_tags(valid_tags):
     return [t for t in candidates if t in valid_tags]
 
 
-def generate_clothing_tags(valid_tags):
+def generate_location_tags(valid_tags):
     """
-    Generate expanded CLOTHING_TAGS.
+    Generate LOCATION_TAGS — places and structures.
     Only includes tags that exist in valid_tags.
-
-    To add new clothing/accessory tags, append them to the candidates list below.
     """
     candidates = [
-        # Core clothing
-        'shirt', 't-shirt', 'dress_shirt', 'blouse', 'tank_top', 'crop_top', 'tube_top',
-        'sweater', 'hoodie', 'cardigan', 'jacket', 'coat', 'blazer', 'vest',
-        'dress', 'sundress', 'gown', 'wedding_dress', 'evening_gown', 'chinese_dress',
-        'skirt', 'miniskirt', 'pleated_skirt', 'long_skirt',
-        'pants', 'jeans', 'shorts', 'short_shorts', 'bike_shorts',
-        'uniform', 'school_uniform', 'military_uniform', 'maid', 'nurse', 'police',
-        'sailor_collar', 'serafuku',
-        'bikini', 'swimsuit', 'one-piece_swimsuit', 'school_swimsuit',
-        'kimono', 'yukata', 'japanese_clothes', 'chinese_clothes',
-        'armor', 'cape', 'cloak', 'robe',
-        'pajamas', 'nightgown', 'lingerie', 'underwear', 'bra', 'panties',
-        'apron', 'overalls', 'bodysuit', 'jumpsuit', 'leotard',
-        'necktie', 'bow', 'ribbon', 'scarf', 'gloves', 'hat', 'cap',
-        'boots', 'shoes', 'sandals', 'high_heels', 'sneakers',
-        'thighhighs', 'pantyhose', 'kneehighs', 'socks', 'stockings',
-        'naked', 'nude', 'topless', 'bare_shoulders', 'bare_legs',
-        'towel', 'towel_wrap', 'sports_bra', 'gym_uniform',
-        # More tops
-        'polo_shirt', 'hawaiian_shirt', 'flannel', 'turtleneck', 'halter_top',
-        'bandeau', 'bustier', 'corset', 'camisole',
-        'off-shoulder_shirt', 'sleeveless_shirt', 'cropped_shirt',
-        'button-up_shirt', 'collared_shirt', 'open_shirt',
-        'raglan_sleeves', 'puffy_sleeves', 'long_sleeves', 'short_sleeves',
-        'sleeveless', 'strapless', 'backless_outfit', 'see-through',
-        # More bottoms
-        'cargo_pants', 'sweatpants', 'leggings', 'capri_pants',
-        'harem_pants', 'pencil_skirt', 'a-line_skirt',
-        'wrap_skirt', 'denim_shorts', 'gym_shorts',
-        'high-waist_skirt', 'low-rise_pants', 'bell-bottoms',
-        'micro_skirt', 'frilled_skirt', 'layered_skirt',
-        'plaid_skirt', 'checkered_skirt', 'striped_skirt',
-        'yoga_pants', 'track_pants', 'sweatshorts',
-        # More dresses
-        'cocktail_dress', 'ball_gown', 'shift_dress', 'wrap_dress',
-        'slip_dress', 'maxi_dress', 'mini_dress',
-        'strapless_dress', 'halterneck_dress', 'backless_dress',
-        'mermaid_dress', 'princess_dress', 'lolita_fashion',
-        'gothic_lolita', 'sweet_lolita', 'classic_lolita',
-        'pinafore_dress', 'shirt_dress', 'summer_dress',
-        'frilled_dress', 'layered_dress', 'high-low_dress',
-        # More outerwear
-        'parka', 'windbreaker', 'peacoat', 'trench_coat', 'denim_jacket',
-        'leather_jacket', 'fur_coat', 'poncho', 'shawl', 'stole',
-        'fur_trim', 'hood', 'hooded_jacket', 'rain_coat', 'lab_coat',
-        'letterman_jacket', 'bomber_jacket', 'varsity_jacket',
-        'suit', 'tuxedo', 'formal', 'business_suit',
-        'track_jacket', 'anorak', 'overcoat',
-        # More footwear
-        'loafers', 'oxfords', 'pumps', 'stilettos', 'wedges',
-        'platform_shoes', 'flip-flops', 'slippers', 'ballet_shoes',
-        'combat_boots', 'riding_boots', 'thigh_boots', 'knee_boots',
-        'ankle_boots', 'rain_boots', 'snow_boots',
-        'mary_janes', 'school_shoes', 'dress_shoes',
-        'barefoot', 'no_shoes', 'shoe_soles',
-        'roller_skates', 'ice_skates', 'ski_boots',
-        'geta', 'zouri', 'uwabaki', 'waraji',
-        # Accessories
-        'choker', 'necklace', 'pendant', 'bracelet', 'bangle',
-        'earrings', 'ring', 'watch', 'wristwatch',
-        'belt', 'suspenders', 'tie_clip', 'cufflinks', 'brooch',
-        'hairpin', 'hair_clip', 'headband', 'hairband', 'tiara', 'crown',
-        'hair_ribbon', 'hair_bow', 'hair_flower', 'hair_ornament',
-        'scrunchie', 'ponytail_holder',
-        'glasses', 'sunglasses', 'monocle', 'goggles',
-        'mask', 'gas_mask', 'surgical_mask', 'face_mask',
-        'bag', 'handbag', 'purse', 'backpack', 'messenger_bag',
-        'satchel', 'briefcase', 'wallet', 'pouch',
-        'umbrella', 'parasol', 'fan', 'folding_fan',
-        'collar', 'dog_collar', 'chain', 'leash',
-        'armband', 'armlet', 'anklet', 'leg_garter',
-        'wristband', 'sweatband', 'bandana', 'bandanna',
-        'pocket_watch', 'locket', 'amulet', 'talisman',
-        'epaulettes', 'shoulder_pads', 'pauldrons',
-        # Headwear
-        'beret', 'beanie', 'fedora', 'top_hat', 'cowboy_hat',
-        'sun_hat', 'straw_hat', 'witch_hat', 'wizard_hat',
-        'santa_hat', 'party_hat', 'nurse_cap', 'chef_hat',
-        'baseball_cap', 'visor', 'helmet', 'hard_hat',
-        'veil', 'headdress', 'headpiece', 'maid_headdress',
-        'animal_ears', 'cat_ears', 'dog_ears', 'fox_ears',
-        'rabbit_ears', 'bunny_ears', 'wolf_ears', 'horse_ears',
-        'fake_animal_ears', 'animal_ear_headphones',
-        'halo', 'horns', 'antlers', 'ahoge',
-        'hair_over_one_eye', 'bangs', 'side_bangs', 'blunt_bangs',
-        # Underwear/swimwear
-        'thong', 'g-string', 'boyshorts', 'briefs', 'boxers',
-        'garter_belt', 'garter_straps', 'garters',
-        'string_bikini', 'micro_bikini', 'sling_bikini',
-        'monokini', 'tankini', 'competition_swimsuit',
-        'bikini_top', 'bikini_bottom', 'swim_trunks',
-        'side-tie_bikini', 'front-tie_bikini', 'bandeau_bikini',
-        'highleg', 'highleg_leotard', 'highleg_swimsuit',
-        'lowleg', 'lowleg_panties',
-        'fundoshi', 'loincloth', 'sarong', 'pareo',
-        'negligee', 'babydoll', 'chemise', 'teddy_(lingerie)',
-        'corset', 'bustier', 'waist_cincher',
-        # States/modifications
-        'undressing', 'partially_clothed',
-        'clothes_lift', 'shirt_lift', 'skirt_lift', 'dress_lift',
-        'clothes_pull', 'shirt_pull', 'skirt_pull', 'pants_pull',
-        'open_clothes', 'open_shirt', 'open_jacket', 'open_coat',
-        'unbuttoned', 'unzipped', 'untied', 'loosened',
-        'torn_clothes', 'torn_shirt', 'torn_dress', 'torn_pants',
-        'wet_clothes', 'wet_shirt', 'wet_dress',
-        'tight_clothes', 'tight_shirt', 'tight_dress', 'tight_pants',
-        'oversized_clothes', 'oversized_shirt',
-        'clothes_around_waist', 'jacket_around_waist',
-        'off_shoulder', 'single_bare_shoulder',
-        'rolled_up_sleeves', 'pushed_up_sleeves',
-        'cross-laced_clothes', 'lace-up', 'lace_trim',
-        'frills', 'frilled', 'ruffles', 'ruffled',
-        'plaid', 'striped', 'polka_dot', 'checkered',
-        'floral_print', 'camouflage', 'leopard_print', 'zebra_print',
-        # Uniforms/costumes
-        'cheerleader', 'bunny_girl', 'bunny_suit', 'playboy_bunny',
-        'maid_apron', 'maid_dress', 'french_maid',
-        'sailor_uniform', 'sailor_dress', 'sailor_shirt',
-        'witch', 'witch_costume', 'angel', 'devil',
-        'santa_costume', 'santa_dress', 'christmas_outfit',
-        'halloween_costume', 'vampire', 'succubus',
-        'pirate', 'cowgirl', 'cowboy',
-        'flight_attendant', 'waitress', 'bartender',
-        'firefighter', 'astronaut', 'pilot',
-        'detective', 'spy', 'ninja', 'samurai',
-        'gladiator', 'knight', 'paladin', 'ranger',
-        'idol', 'idol_clothes', 'stage_outfit',
-        'gym_leader', 'magical_girl', 'sailor_senshi_uniform',
-        'plugsuit', 'pilot_suit', 'racing_suit',
-        'track_suit', 'track_jacket', 'track_pants',
-        'gym_shorts', 'gym_shirt', 'athletic_wear',
-        'kendo_uniform', 'karate_gi', 'judo_gi',
-        'ballet_outfit', 'tutu', 'dance_outfit',
-        'cheerleader_uniform', 'tennis_uniform',
-        'basketball_uniform', 'soccer_uniform', 'baseball_uniform',
-        'volleyball_uniform', 'swimming_cap',
-        # Garment details
-        'zipper', 'button', 'buckle', 'clasp',
-        'pocket', 'collar', 'lapel', 'cuff',
-        'hem', 'seam', 'pleat', 'dart',
-        'shoulder_strap', 'spaghetti_strap', 'halter',
-        'drawstring', 'elastic', 'velcro',
-        'embroidery', 'sequins', 'beading', 'rhinestone',
-        'tassel', 'fringe', 'pompom',
-        'hood_down', 'hood_up', 'zipper_pull_tab',
+        'indoors', 'outdoors', 'bedroom', 'bathroom', 'kitchen', 'living_room',
+        'classroom', 'hallway', 'rooftop', 'balcony', 'office', 'library',
+        'hospital', 'church', 'temple', 'shrine', 'castle', 'dungeon',
+        'cave', 'ruins', 'alley', 'street', 'city', 'town',
+        'village', 'park', 'garden', 'forest', 'jungle', 'mountain',
+        'hill', 'cliff', 'beach', 'ocean', 'lake', 'river',
+        'waterfall', 'pool', 'desert', 'field', 'meadow', 'farm',
+        'bridge', 'train', 'bus', 'car_interior', 'space', 'underwater',
+        'cafe', 'restaurant', 'bar_(place)', 'shop', 'market', 'stadium',
+        'arena', 'stage', 'gym', 'dojo', 'laboratory', 'prison',
+        'throne_room', 'tent', 'campfire', 'locker_room', 'closet', 'greenhouse',
+        'garage', 'warehouse', 'factory', 'studio', 'theater', 'museum',
+        'hotel_room', 'elevator', 'infirmary', 'changing_room', 'fitting_room',
+        'cockpit', 'recording_studio', 'sauna', 'onsen', 'highway', 'parking_lot',
+        'pier', 'dock', 'harbor', 'airport', 'train_station', 'bus_stop',
+        'graveyard', 'amusement_park', 'zoo', 'aquarium', 'lighthouse', 'canal',
+        'volcano', 'canyon', 'valley', 'island', 'shore', 'riverbank',
+        'fountain', 'overpass', 'tunnel', 'construction_site', 'junkyard',
+        'wheat_field', 'playground', 'track_and_field', 'skating_rink', 'picnic',
+        'crosswalk', 'sidewalk', 'road', 'path', 'flower_field', 'bamboo_forest',
+        'cherry_blossoms', 'pagoda', 'cathedral', 'tower', 'skyscraper', 'apartment',
+        'building', 'house', 'hut', 'cabin', 'treehouse', 'gazebo',
+        'veranda', 'porch', 'conservatory', 'cave_interior', 'ballroom',
+        'courtyard', 'plaza', 'monastery', 'corridor', 'lobby',
+    ]
+    return [t for t in candidates if t in valid_tags]
+
+
+def generate_atmosphere_tags(valid_tags):
+    """
+    Generate ATMOSPHERE_TAGS — weather, lighting, and atmospheric effects.
+    Only includes tags that exist in valid_tags.
+    """
+    candidates = [
+        'rain', 'snowing', 'fog', 'storm', 'wind', 'blizzard', 'thunder',
+        'lightning', 'overcast', 'clear_sky', 'dust', 'sandstorm', 'rainbow',
+        'aurora', 'cloudy_sky', 'cloudy', 'snowflakes', 'snowstorm', 'tornado',
+        'meteor', 'shooting_star', 'comet', 'eclipse',
+        'candlelight', 'lantern', 'neon_lights', 'spotlight', 'backlighting',
+        'lens_flare', 'dim_lighting', 'light_rays', 'light_particles',
+        'shadow', 'silhouette', 'reflection', 'glowing', 'fire', 'bonfire',
+        'torch', 'lamp', 'chandelier', 'light_bulb', 'fireflies', 'bioluminescence',
+        'dappled_sunlight', 'sunbeam', 'sun_glare', 'hanging_light', 'stage_lights',
+        'underlighting', 'depth_of_field', 'dark_clouds',
+        'petals', 'falling_petals', 'falling_leaves', 'autumn_leaves',
+        'cherry_blossom_petals', 'snow',
+        'dark', 'bright', 'shade', 'moonlight', 'sunlight',
+    ]
+    return [t for t in candidates if t in valid_tags]
+
+
+def generate_time_tags(valid_tags):
+    """
+    Generate TIME_TAGS — time of day and sky states.
+    Only includes tags that exist in valid_tags.
+    """
+    candidates = [
+        'sunset', 'sunrise', 'night', 'day', 'evening', 'morning',
+        'twilight', 'dusk', 'dawn', 'midnight', 'noon', 'afternoon',
+        'starry_sky', 'night_sky', 'blue_sky', 'orange_sky', 'red_sky',
+        'purple_sky', 'pink_sky', 'gradient_sky',
+        'crescent_moon', 'full_moon', 'half_moon', 'sun', 'moon',
+        'constellation', 'golden_hour',
     ]
     return [t for t in candidates if t in valid_tags]
 
@@ -386,10 +303,14 @@ def main():
 
     # Generate expanded persistence tags
     background_tags = generate_background_tags(tag_names)
-    clothing_tags = generate_clothing_tags(tag_names)
+    location_tags = generate_location_tags(tag_names)
+    atmosphere_tags = generate_atmosphere_tags(tag_names)
+    time_tags = generate_time_tags(tag_names)
 
     print(f"Background tags: {len(background_tags)} (validated against VALID_BOORU_TAGS)", file=sys.stderr)
-    print(f"Clothing tags: {len(clothing_tags)} (validated against VALID_BOORU_TAGS)", file=sys.stderr)
+    print(f"Location tags: {len(location_tags)} (validated against VALID_BOORU_TAGS)", file=sys.stderr)
+    print(f"Atmosphere tags: {len(atmosphere_tags)} (validated against VALID_BOORU_TAGS)", file=sys.stderr)
+    print(f"Time tags: {len(time_tags)} (validated against VALID_BOORU_TAGS)", file=sys.stderr)
 
     if args.dry_run:
         print("\n[DRY RUN] No changes written.", file=sys.stderr)
@@ -404,8 +325,12 @@ def main():
     valid_tags_end = None
     bg_tags_start = None
     bg_tags_end = None
-    cloth_tags_start = None
-    cloth_tags_end = None
+    loc_tags_start = None
+    loc_tags_end = None
+    atm_tags_start = None
+    atm_tags_end = None
+    time_tags_start = None
+    time_tags_end = None
     aliases_start = None
     aliases_end = None
 
@@ -418,25 +343,55 @@ def main():
             bg_tags_start = i
         elif bg_tags_start is not None and bg_tags_end is None and line.strip() == "]);":
             bg_tags_end = i
-        elif "const CLOTHING_TAGS = new Set([" in line:
-            cloth_tags_start = i
-        elif cloth_tags_start is not None and cloth_tags_end is None and line.strip() == "]);":
-            cloth_tags_end = i
+        elif "const LOCATION_TAGS = new Set([" in line:
+            loc_tags_start = i
+        elif loc_tags_start is not None and loc_tags_end is None and line.strip() == "]);":
+            loc_tags_end = i
+        elif "const ATMOSPHERE_TAGS = new Set([" in line:
+            atm_tags_start = i
+        elif atm_tags_start is not None and atm_tags_end is None and line.strip() == "]);":
+            atm_tags_end = i
+        elif "const TIME_TAGS = new Set([" in line:
+            time_tags_start = i
+        elif time_tags_start is not None and time_tags_end is None and line.strip() == "]);":
+            time_tags_end = i
         elif "const TAG_ALIASES = {" in line:
             aliases_start = i
         elif aliases_start is not None and aliases_end is None and line.strip() == "};":
             aliases_end = i
 
-    if None in [valid_tags_start, valid_tags_end, bg_tags_start, bg_tags_end,
-                cloth_tags_start, cloth_tags_end, aliases_start, aliases_end]:
+    required = [valid_tags_start, valid_tags_end, bg_tags_start, bg_tags_end,
+                loc_tags_start, loc_tags_end, atm_tags_start, atm_tags_end,
+                time_tags_start, time_tags_end, aliases_start, aliases_end]
+    if None in required:
         print("ERROR: Could not find all section markers in index.js", file=sys.stderr)
+        print(f"  VALID_BOORU_TAGS: {valid_tags_start}-{valid_tags_end}", file=sys.stderr)
+        print(f"  BACKGROUND_TAGS:  {bg_tags_start}-{bg_tags_end}", file=sys.stderr)
+        print(f"  LOCATION_TAGS:    {loc_tags_start}-{loc_tags_end}", file=sys.stderr)
+        print(f"  ATMOSPHERE_TAGS:  {atm_tags_start}-{atm_tags_end}", file=sys.stderr)
+        print(f"  TIME_TAGS:        {time_tags_start}-{time_tags_end}", file=sys.stderr)
+        print(f"  TAG_ALIASES:      {aliases_start}-{aliases_end}", file=sys.stderr)
         sys.exit(1)
 
     print(f"\nSection locations in index.js:", file=sys.stderr)
     print(f"  VALID_BOORU_TAGS: lines {valid_tags_start+1}-{valid_tags_end+1}", file=sys.stderr)
     print(f"  BACKGROUND_TAGS:  lines {bg_tags_start+1}-{bg_tags_end+1}", file=sys.stderr)
-    print(f"  CLOTHING_TAGS:    lines {cloth_tags_start+1}-{cloth_tags_end+1}", file=sys.stderr)
+    print(f"  LOCATION_TAGS:    lines {loc_tags_start+1}-{loc_tags_end+1}", file=sys.stderr)
+    print(f"  ATMOSPHERE_TAGS:  lines {atm_tags_start+1}-{atm_tags_end+1}", file=sys.stderr)
+    print(f"  TIME_TAGS:        lines {time_tags_start+1}-{time_tags_end+1}", file=sys.stderr)
     print(f"  TAG_ALIASES:      lines {aliases_start+1}-{aliases_end+1}", file=sys.stderr)
+
+    def format_persistence_set(tags_list):
+        """Format persistence tags, 6 per line."""
+        result = []
+        for i in range(0, len(tags_list), 6):
+            chunk = tags_list[i:i+6]
+            entries = ", ".join(f"'{escape_js_string(t)}'" for t in chunk)
+            if i + 6 < len(tags_list):
+                result.append(f"    {entries},\n")
+            else:
+                result.append(f"    {entries}\n")
+        return result
 
     # Build new file content
     new_lines = []
@@ -459,26 +414,28 @@ def main():
     # BACKGROUND_TAGS
     new_lines.append("// Scene Persistence: Background/setting tags (curated subset of VALID_BOORU_TAGS)\n")
     new_lines.append("const BACKGROUND_TAGS = new Set([\n")
-    for i in range(0, len(background_tags), 6):
-        chunk = background_tags[i:i+6]
-        entries = ", ".join(f"'{escape_js_string(t)}'" for t in chunk)
-        if i + 6 < len(background_tags):
-            new_lines.append(f"    {entries},\n")
-        else:
-            new_lines.append(f"    {entries}\n")
+    new_lines.extend(format_persistence_set(background_tags))
     new_lines.append("]);\n")
     new_lines.append("\n")
 
-    # CLOTHING_TAGS
-    new_lines.append("// Scene Persistence: Clothing tags (curated subset of VALID_BOORU_TAGS)\n")
-    new_lines.append("const CLOTHING_TAGS = new Set([\n")
-    for i in range(0, len(clothing_tags), 6):
-        chunk = clothing_tags[i:i+6]
-        entries = ", ".join(f"'{escape_js_string(t)}'" for t in chunk)
-        if i + 6 < len(clothing_tags):
-            new_lines.append(f"    {entries},\n")
-        else:
-            new_lines.append(f"    {entries}\n")
+    # LOCATION_TAGS
+    new_lines.append("// Scene Persistence: Location tags (curated subset of VALID_BOORU_TAGS)\n")
+    new_lines.append("const LOCATION_TAGS = new Set([\n")
+    new_lines.extend(format_persistence_set(location_tags))
+    new_lines.append("]);\n")
+    new_lines.append("\n")
+
+    # ATMOSPHERE_TAGS
+    new_lines.append("// Scene Persistence: Atmosphere/lighting tags (curated subset of VALID_BOORU_TAGS)\n")
+    new_lines.append("const ATMOSPHERE_TAGS = new Set([\n")
+    new_lines.extend(format_persistence_set(atmosphere_tags))
+    new_lines.append("]);\n")
+    new_lines.append("\n")
+
+    # TIME_TAGS
+    new_lines.append("// Scene Persistence: Time-of-day tags (curated subset of VALID_BOORU_TAGS)\n")
+    new_lines.append("const TIME_TAGS = new Set([\n")
+    new_lines.extend(format_persistence_set(time_tags))
     new_lines.append("]);\n")
     new_lines.append("\n")
 
@@ -504,7 +461,9 @@ def main():
     print(f"  VALID_BOORU_TAGS: {len(tag_names)} entries", file=sys.stderr)
     print(f"  TAG_ALIASES:      {len(aliases_dict)} entries", file=sys.stderr)
     print(f"  BACKGROUND_TAGS:  {len(background_tags)} entries", file=sys.stderr)
-    print(f"  CLOTHING_TAGS:    {len(clothing_tags)} entries", file=sys.stderr)
+    print(f"  LOCATION_TAGS:    {len(location_tags)} entries", file=sys.stderr)
+    print(f"  ATMOSPHERE_TAGS:  {len(atmosphere_tags)} entries", file=sys.stderr)
+    print(f"  TIME_TAGS:        {len(time_tags)} entries", file=sys.stderr)
 
 
 if __name__ == "__main__":
