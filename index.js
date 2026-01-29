@@ -801,22 +801,22 @@ jQuery(async () => {
         // Load HTML template
         await $.get(`${extensionFolderPath}/example.html`).then(h => $("#extensions_settings2").append(h));
 
-        // Add regenerate background button to the extensions menu area
-        const regenBtnHtml = `
-            <div id="kazuma_regen_btn" class="list-group-item flex-container flexGap5 interactable" tabindex="0" title="Generate VN Background">
-                <i class="fa-solid fa-panorama extensionsMenuExtensionButton"></i>
-            </div>
-        `;
-
-        // Try to add to the extensions menu (wand menu dropdown)
+        // Add standalone regenerate background button near send button
         const addRegenButton = () => {
             if ($("#kazuma_regen_btn").length > 0) return; // Already added
 
-            // Add to the data_holder or extensionsMenu area
-            const $extensionsMenu = $("#extensionsMenu");
-            if ($extensionsMenu.length > 0) {
-                $extensionsMenu.append(regenBtnHtml);
-                $("#kazuma_regen_btn").on("click", () => {
+            const $sendForm = $("#send_form");
+            const $rightSendForm = $("#rightSendForm");
+
+            if ($rightSendForm.length > 0) {
+                // Create button matching SillyTavern's style
+                const regenBtn = $(`
+                    <div id="kazuma_regen_btn" class="fa-solid fa-panorama interactable"
+                         tabindex="0" title="Generate VN Background"
+                         data-i18n="[title]Generate VN Background"></div>
+                `);
+
+                regenBtn.on("click", () => {
                     if (!extension_settings[extensionName].enabled) {
                         toastr.warning("VN Background Gen is disabled");
                         return;
@@ -824,7 +824,10 @@ jQuery(async () => {
                     console.log(`[${extensionName}] Manual background generation triggered`);
                     onGeneratePrompt();
                 });
-                console.log(`[${extensionName}] Regen button added to extensions menu`);
+
+                // Prepend to right side (before send button)
+                $rightSendForm.prepend(regenBtn);
+                console.log(`[${extensionName}] Regen button added to rightSendForm`);
             }
         };
 
@@ -833,7 +836,7 @@ jQuery(async () => {
         const observer = new MutationObserver(() => addRegenButton());
         observer.observe(document.body, { childList: true, subtree: true });
 
-        // Stop observing after 10 seconds to avoid performance issues
+        // Stop observing after 10 seconds
         setTimeout(() => observer.disconnect(), 10000);
 
         // Bind event handlers
