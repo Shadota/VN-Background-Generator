@@ -33,18 +33,11 @@ const HARDCODED_WORKFLOW = {
             "ckpt_name": "{{MODEL}}"
         }
     },
-    "4": {
-        "class_type": "CLIPSetLastLayer",
-        "inputs": {
-            "clip": ["3", 1],
-            "stop_at_clip_layer": -1
-        }
-    },
     "5": {
         "class_type": "LoraLoader",
         "inputs": {
             "model": ["3", 0],
-            "clip": ["4", 0],
+            "clip": ["3", 1],
             "lora_name": "{{LORA1}}",
             "strength_model": 1.0,
             "strength_clip": 1.0
@@ -239,7 +232,7 @@ function buildWorkflowPrompt(positivePrompt) {
 
     // LoRA configuration
     const loras = [
-        { name: s.selectedLora, wt: s.selectedLoraWt, nodeId: "5", prevModel: ["3", 0], prevClip: ["4", 0] },
+        { name: s.selectedLora, wt: s.selectedLoraWt, nodeId: "5", prevModel: ["3", 0], prevClip: ["3", 1] },
         { name: s.selectedLora2, wt: s.selectedLoraWt2, nodeId: "6", prevModel: ["5", 0], prevClip: ["5", 1] },
         { name: s.selectedLora3, wt: s.selectedLoraWt3, nodeId: "7", prevModel: ["6", 0], prevClip: ["6", 1] },
         { name: s.selectedLora4, wt: s.selectedLoraWt4, nodeId: "8", prevModel: ["7", 0], prevClip: ["7", 1] }
@@ -247,7 +240,7 @@ function buildWorkflowPrompt(positivePrompt) {
 
     // Track the last valid model/clip outputs for rewiring
     let lastModelOutput = ["3", 0];
-    let lastClipOutput = ["4", 0];
+    let lastClipOutput = ["3", 1];
 
     loras.forEach((lora, i) => {
         const nodeId = lora.nodeId;
@@ -477,6 +470,17 @@ async function onGeneratePrompt() {
     }
 
     isGenerating = true;
+    showKazumaProgress("Checking ComfyUI...");
+
+    // Check if ComfyUI is ready
+    const comfyReady = await checkComfyUIReady();
+    if (!comfyReady) {
+        hideKazumaProgress();
+        isGenerating = false;
+        toastr.warning("ComfyUI is still loading models. Please wait a moment and try again.");
+        return;
+    }
+
     showKazumaProgress("Extracting Scene...");
 
     try {
@@ -502,7 +506,7 @@ async function onGeneratePrompt() {
 }
 
 async function generateWithComfy(positivePrompt) {
-    const url = extension_settings[extensionName].comfyUrl;
+    const comfyUrl = extension_settings[extensionName].comfyUrl;
 
     // Build workflow with injected parameters
     const workflow = buildWorkflowPrompt(positivePrompt);
@@ -510,48 +514,67 @@ async function generateWithComfy(positivePrompt) {
     console.log(`[${extensionName}] Sending workflow to ComfyUI:`, JSON.stringify(workflow, null, 2));
 
     try {
-        const res = await fetch(`${url}/prompt`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ prompt: workflow })
-        });
+        // Try using SillyTavern's proxy first (handles validation better)
+        let data;
+        let useDirectConnection = false;
 
-        const data = await res.json();
-        console.log(`[${extensionName}] ComfyUI response:`, data);
+        try {
+            const proxyRes = await fetch('/api/sd/comfy/generate', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    url: comfyUrl,
+                    prompt: workflow
+                })
+            });
 
-        // Check for validation errors in response (ComfyUI returns these in various formats)
-        if (data.error) {
-            console.error(`[${extensionName}] ComfyUI error:`, data.error);
-            const errorMsg = typeof data.error === 'string' ? data.error :
-                             (data.error.message || JSON.stringify(data.error));
-
-            if (errorMsg.includes('not in []') || errorMsg.includes('not in list')) {
-                throw new Error("ComfyUI model list is empty. Please refresh ComfyUI (click Refresh in ComfyUI sidebar) and click Test Connection.");
+            if (proxyRes.ok) {
+                data = await proxyRes.json();
+                console.log(`[${extensionName}] Proxy response:`, data);
+            } else {
+                console.log(`[${extensionName}] Proxy failed, trying direct connection...`);
+                useDirectConnection = true;
             }
-            throw new Error(errorMsg);
+        } catch (proxyErr) {
+            console.log(`[${extensionName}] Proxy not available, using direct connection:`, proxyErr.message);
+            useDirectConnection = true;
         }
 
-        if (data.node_errors && Object.keys(data.node_errors).length > 0) {
-            console.error(`[${extensionName}] Node errors:`, data.node_errors);
-            const errorDetails = JSON.stringify(data.node_errors);
+        // Fallback to direct ComfyUI connection
+        if (useDirectConnection) {
+            const res = await fetch(`${comfyUrl}/prompt`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ prompt: workflow })
+            });
+            data = await res.json();
+            console.log(`[${extensionName}] Direct ComfyUI response:`, data);
+        }
 
-            if (errorDetails.includes('not in []') || errorDetails.includes('not in list')) {
-                throw new Error("ComfyUI model list is empty. Please refresh ComfyUI (click Refresh in ComfyUI sidebar) and click Test Connection.");
+        // Log node_errors first for debugging
+        if (data.node_errors && Object.keys(data.node_errors).length > 0) {
+            console.error(`[${extensionName}] Node errors detail:`, JSON.stringify(data.node_errors, null, 2));
+        }
+
+        // Check for validation errors in response
+        if (data.error) {
+            console.error(`[${extensionName}] ComfyUI error:`, data.error);
+            const fullDetails = JSON.stringify(data);
+
+            if (fullDetails.includes('not in []') || fullDetails.includes('Value not in list')) {
+                throw new Error("ComfyUI hasn't finished loading models. Please wait a moment and try again, or refresh ComfyUI.");
             }
-            throw new Error(`Workflow validation failed - check ComfyUI console`);
+            const errorMsg = typeof data.error === 'string' ? data.error :
+                             (data.error.message || JSON.stringify(data.error));
+            throw new Error(errorMsg);
         }
 
         if (!data.prompt_id) {
             console.error(`[${extensionName}] No prompt_id in response:`, data);
-            const fullResponse = JSON.stringify(data);
-
-            if (fullResponse.includes('not in []') || fullResponse.includes('not in list')) {
-                throw new Error("ComfyUI model list is empty. Please refresh ComfyUI (click Refresh in ComfyUI sidebar) and click Test Connection.");
-            }
-            throw new Error("ComfyUI rejected the workflow - check ComfyUI console for details");
+            throw new Error("ComfyUI rejected the workflow - check browser console for details");
         }
 
-        await waitForGeneration(url, data.prompt_id, positivePrompt);
+        await waitForGeneration(comfyUrl, data.prompt_id, positivePrompt);
     } catch (e) {
         hideKazumaProgress();
         toastr.error("ComfyUI Error: " + e.message);
@@ -644,6 +667,29 @@ async function insertImageToChat(imgUrl) {
 }
 
 // === COMFYUI CONNECTION ===
+
+async function checkComfyUIReady() {
+    const comfyUrl = extension_settings[extensionName].comfyUrl;
+    try {
+        // Check if ComfyUI has loaded its models by fetching object_info
+        const res = await fetch(`${comfyUrl}/object_info/CheckpointLoaderSimple`);
+        if (!res.ok) return false;
+
+        const data = await res.json();
+        const checkpoints = data?.CheckpointLoaderSimple?.input?.required?.ckpt_name?.[0];
+
+        if (!checkpoints || checkpoints.length === 0) {
+            console.warn(`[${extensionName}] ComfyUI model list is empty - still loading`);
+            return false;
+        }
+
+        console.log(`[${extensionName}] ComfyUI ready with ${checkpoints.length} models`);
+        return true;
+    } catch (e) {
+        console.warn(`[${extensionName}] ComfyUI not ready:`, e.message);
+        return false;
+    }
+}
 
 async function onTestConnection() {
     const url = extension_settings[extensionName].comfyUrl;
