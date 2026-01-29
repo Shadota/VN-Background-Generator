@@ -801,11 +801,13 @@ jQuery(async () => {
         // Load HTML template
         await $.get(`${extensionFolderPath}/example.html`).then(h => $("#extensions_settings2").append(h));
 
-        // Add regenerate background button to chat input area
+        // Add regenerate background button to left side of chat input (near extensions menu)
         const regenBtn = $(`
-            <div id="kazuma_regen_btn" class="fa-solid fa-image interactable"
+            <div id="kazuma_regen_btn" class="interactable" tabindex="0"
                  title="Generate VN Background"
-                 style="cursor: pointer; opacity: 0.7; font-size: 1.2em;"></div>
+                 style="cursor: pointer; display: flex; align-items: center; justify-content: center;">
+                <i class="fa-solid fa-panorama"></i>
+            </div>
         `);
         regenBtn.on("click", () => {
             if (!extension_settings[extensionName].enabled) {
@@ -815,8 +817,8 @@ jQuery(async () => {
             console.log(`[${extensionName}] Manual background generation triggered`);
             onGeneratePrompt();
         });
-        // Insert next to the send button
-        $("#send_but_sheld").append(regenBtn);
+        // Insert into left send form area
+        $("#leftSendForm").append(regenBtn);
 
         // Bind event handlers
         $("#kazuma_enable").on("change", (e) => {
