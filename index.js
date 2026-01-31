@@ -88,10 +88,18 @@ const HARDCODED_WORKFLOW = {
             "samples": ["3", 0]
         }
     },
+    "9": {
+        "class_type": "ImageScaleBy",
+        "inputs": {
+            "image": ["8", 0],
+            "upscale_method": "lanczos",
+            "scale_by": 1.25
+        }
+    },
     "14": {
         "class_type": "SaveImage",
         "inputs": {
-            "images": ["8", 0],
+            "images": ["9", 0],
             "filename_prefix": "vnbg"
         }
     }
