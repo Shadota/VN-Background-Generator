@@ -2,7 +2,7 @@
 import { extension_settings, getContext } from "../../../extensions.js";
 import { saveSettingsDebounced, eventSource, event_types, getRequestHeaders } from "../../../../script.js";
 
-const extensionName = "Image-gen-kazuma";
+const extensionName = "VN-Background-Generator";
 const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
 
 // === HARDCODED GENERATION PARAMETERS (Illustrious XL optimized) ===
@@ -88,18 +88,10 @@ const HARDCODED_WORKFLOW = {
             "samples": ["3", 0]
         }
     },
-    "9": {
-        "class_type": "ImageScaleBy",
-        "inputs": {
-            "image": ["8", 0],
-            "upscale_method": "lanczos",
-            "scale_by": 1.5
-        }
-    },
     "14": {
         "class_type": "SaveImage",
         "inputs": {
-            "images": ["9", 0],
+            "images": ["8", 0],
             "filename_prefix": "vnbg"
         }
     }
