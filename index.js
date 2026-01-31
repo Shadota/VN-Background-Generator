@@ -89,9 +89,10 @@ const HARDCODED_WORKFLOW = {
         }
     },
     "14": {
-        "class_type": "PreviewImage",
+        "class_type": "SaveImage",
         "inputs": {
-            "images": ["8", 0]
+            "images": ["8", 0],
+            "filename_prefix": "vnbg"
         }
     }
 };
@@ -256,10 +257,12 @@ function buildBackgroundPrompt(sceneJson) {
     // Environment base tags
     parts.push('no_humans', 'scenery', 'detailed_environment');
 
+    // Composition tags for proper VN background framing
+    parts.push('eye_level', 'centered_composition', 'depth_of_field', 'wide_shot');
+
     // Location
     const location = sceneJson.location.toLowerCase().replace(/\s+/g, '_');
     parts.push(location);
-    parts.push('clear_composition');
 
     // Key elements (architectural/natural)
     if (sceneJson.key_elements) {
