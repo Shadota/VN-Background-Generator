@@ -89,10 +89,9 @@ const HARDCODED_WORKFLOW = {
         }
     },
     "14": {
-        "class_type": "SaveImage",
+        "class_type": "PreviewImage",
         "inputs": {
-            "images": ["8", 0],
-            "filename_prefix": "vnbg"
+            "images": ["8", 0]
         }
     }
 };
