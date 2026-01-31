@@ -1,67 +1,115 @@
 /* eslint-disable no-undef */
 import { extension_settings, getContext } from "../../../extensions.js";
-import { saveSettingsDebounced, saveChat, reloadCurrentChat, eventSource, event_types, addOneMessage, getRequestHeaders, appendMediaToMessage } from "../../../../script.js";
-import { saveBase64AsFile } from "../../../utils.js";
-import { humanizedDateTime } from "../../../RossAscends-mods.js";
-import { Popup, POPUP_TYPE } from "../../../popup.js";
+import { saveSettingsDebounced, eventSource, event_types, getRequestHeaders } from "../../../../script.js";
 
 const extensionName = "Image-gen-kazuma";
 const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
 
-// --- UPDATED CONSTANTS (With Dscriptions) ---
-const KAZUMA_PLACEHOLDERS = [
-    { key: '"*input*"', desc: "Positive Prompt (Text)" },
-    { key: '"*ninput*"', desc: "Negative Prompt (Text)" },
-    { key: '"*seed*"', desc: "Seed (Integer)" },
-    { key: '"*steps*"', desc: "Sampling Steps (Integer)" },
-    { key: '"*cfg*"', desc: "CFG Scale (Float)" },
-    { key: '"*denoise*"', desc: "Denoise Strength (Float)" },
-    { key: '"*clip_skip*"', desc: "CLIP Skip (Integer)" },
-    { key: '"*model*"', desc: "Checkpoint Name" },
-    { key: '"*sampler*"', desc: "Sampler Name" },
-    { key: '"*width*"', desc: "Image Width (px)" },
-    { key: '"*height*"', desc: "Image Height (px)" },
-    { key: '"*lora*"', desc: "LoRA 1 Filename" },
-    { key: '"*lorawt*"', desc: "LoRA 1 Weight (Float)" },
-    { key: '"*lora2*"', desc: "LoRA 2 Filename" },
-    { key: '"*lorawt2*"', desc: "LoRA 2 Weight (Float)" },
-    { key: '"*lora3*"', desc: "LoRA 3 Filename" },
-    { key: '"*lorawt3*"', desc: "LoRA 3 Weight (Float)" },
-    { key: '"*lora4*"', desc: "LoRA 4 Filename" },
-    { key: '"*lorawt4*"', desc: "LoRA 4 Weight (Float)" }
-];
-
-const RESOLUTIONS = [
-    { label: "1024 x 1024 (SDXL 1:1)", w: 1024, h: 1024 },
-    { label: "1152 x 896 (SDXL Landscape)", w: 1152, h: 896 },
-    { label: "896 x 1152 (SDXL Portrait)", w: 896, h: 1152 },
-    { label: "1216 x 832 (SDXL Landscape)", w: 1216, h: 832 },
-    { label: "832 x 1216 (SDXL Portrait)", w: 832, h: 1216 },
-    { label: "1344 x 768 (SDXL Landscape)", w: 1344, h: 768 },
-    { label: "768 x 1344 (SDXL Portrait)", w: 768, h: 1344 },
-    { label: "512 x 512 (SD 1.5 1:1)", w: 512, h: 512 },
-    { label: "768 x 512 (SD 1.5 Landscape)", w: 768, h: 512 },
-    { label: "512 x 768 (SD 1.5 Portrait)", w: 512, h: 768 },
-];
-
-const defaultWorkflowData = {
-  "3": { "inputs": { "seed": "seed", "steps": 20, "cfg": 7, "sampler_name": "sampler", "scheduler": "normal", "denoise": 1, "model": ["35", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0] }, "class_type": "KSampler" },
-  "4": { "inputs": { "ckpt_name": "model" }, "class_type": "CheckpointLoaderSimple" },
-  "5": { "inputs": { "width": "width", "height": "height", "batch_size": 1 }, "class_type": "EmptyLatentImage" },
-  "6": { "inputs": { "text": "input", "clip": ["35", 1] }, "class_type": "CLIPTextEncode" },
-  "7": { "inputs": { "text": "ninput", "clip": ["35", 1] }, "class_type": "CLIPTextEncode" },
-  "8": { "inputs": { "samples": ["33", 0], "vae": ["4", 2] }, "class_type": "VAEDecode" },
-  "14": { "inputs": { "images": ["8", 0] }, "class_type": "PreviewImage" },
-  "33": { "inputs": { "seed": "seed", "steps": 20, "cfg": 7, "sampler_name": "sampler", "scheduler": "normal", "denoise": 0.5, "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["34", 0] }, "class_type": "KSampler" },
-  "34": { "inputs": { "upscale_method": "nearest-exact", "scale_by": 1.2, "samples": ["3", 0] }, "class_type": "LatentUpscaleBy" },
-  "35": { "inputs": { "lora_name": "lora", "strength_model": "lorawt", "strength_clip": "lorawt", "model": ["4", 0], "clip": ["4", 1] }, "class_type": "LoraLoader" }
+// === HARDCODED GENERATION PARAMETERS (Illustrious XL optimized) ===
+const HARDCODED_PARAMS = {
+    steps: 24,
+    cfg: 5.5,
+    sampler_name: "euler_ancestral",
+    scheduler: "normal",
+    width: 1216,
+    height: 832,
+    denoise: 1.0,
+    clip_skip: -1,  // CLIP skip 1
+    batch_size: 1
 };
 
+// === HARDCODED NEGATIVE PROMPT ===
+const HARDCODED_NEGATIVE = "lowres, bad anatomy, bad hands, text, error, worst quality, low quality, jpeg artifacts, watermark, signature, username, scan, displeasing, oldest, early, chromatic aberration, artistic error, unfinished, 1girl, 1boy, 1other, person, people, human, character, face, body, figure, solo";
+
+// === ILLUSTRIOUS QUALITY TAGS ===
+const ILLUSTRIOUS_QUALITY_TAGS = "masterpiece, absurdres, newest, best quality";
+
+// === HARDCODED COMFYUI WORKFLOW (API format) ===
+// Node structure: CheckpointLoader → CLIPSetLastLayer → [LoRA Chain] → CLIPTextEncode → KSampler → VAEDecode → SaveImage
+// Workflow structure matching Dev-3 node IDs
+const HARDCODED_WORKFLOW = {
+    "4": {
+        "class_type": "CheckpointLoaderSimple",
+        "inputs": {
+            "ckpt_name": "{{MODEL}}"
+        }
+    },
+    "35": {
+        "class_type": "LoraLoader",
+        "inputs": {
+            "model": ["4", 0],
+            "clip": ["4", 1],
+            "lora_name": "{{LORA1}}",
+            "strength_model": 1.0,
+            "strength_clip": 1.0
+        }
+    },
+    "6": {
+        "class_type": "CLIPTextEncode",
+        "inputs": {
+            "clip": ["35", 1],
+            "text": "{{POSITIVE}}"
+        }
+    },
+    "7": {
+        "class_type": "CLIPTextEncode",
+        "inputs": {
+            "clip": ["35", 1],
+            "text": "{{NEGATIVE}}"
+        }
+    },
+    "5": {
+        "class_type": "EmptyLatentImage",
+        "inputs": {
+            "width": 1344,
+            "height": 768,
+            "batch_size": 1
+        }
+    },
+    "3": {
+        "class_type": "KSampler",
+        "inputs": {
+            "model": ["35", 0],
+            "positive": ["6", 0],
+            "negative": ["7", 0],
+            "latent_image": ["5", 0],
+            "seed": -1,
+            "steps": 24,
+            "cfg": 5.5,
+            "sampler_name": "euler_ancestral",
+            "scheduler": "normal",
+            "denoise": 1.0
+        }
+    },
+    "8": {
+        "class_type": "VAEDecode",
+        "inputs": {
+            "vae": ["4", 2],
+            "samples": ["3", 0]
+        }
+    },
+    "9": {
+        "class_type": "ImageScaleBy",
+        "inputs": {
+            "image": ["8", 0],
+            "upscale_method": "lanczos",
+            "scale_by": 1.5
+        }
+    },
+    "14": {
+        "class_type": "SaveImage",
+        "inputs": {
+            "images": ["9", 0],
+            "filename_prefix": "vnbg"
+        }
+    }
+};
+
+// === MINIMAL USER-CONFIGURABLE SETTINGS ===
 const defaultSettings = {
     enabled: true,
-    debugPrompt: false,
+    autoGenEnabled: false,
     comfyUrl: "http://127.0.0.1:8188",
-    currentWorkflowName: "", // Server manages this now
     selectedModel: "",
     selectedLora: "",
     selectedLora2: "",
@@ -71,710 +119,547 @@ const defaultSettings = {
     selectedLoraWt2: 1.0,
     selectedLoraWt3: 1.0,
     selectedLoraWt4: 1.0,
-    imgWidth: 1024,
-    imgHeight: 1024,
-    autoGenEnabled: false,
-    autoGenFreq: 1,
-    customNegative: "bad quality, blurry, worst quality, low quality",
-    customSeed: -1,
-    selectedSampler: "euler",
-    compressImages: true,
-    steps: 20,
-    cfg: 7.0,
-    denoise: 0.5,
-    clipSkip: 1,
-    // Tag Generation API Settings
     tagApiEndpoint: "",
     tagApiKey: "",
-    tagModel: "",
-    savedWorkflowStates: {},
-    // Pop-out Settings
-    usePopout: true,
-    autoOpenPopout: true,
-    showPromptInPopout: true,
-    alsoSaveToChat: false
+    tagModel: ""
 };
 
-// --- POPOUT STATE VARIABLES ---
-let KAZUMA_POPOUT_VISIBLE = false;
-let KAZUMA_POPOUT_LOCKED = false;
-let $KAZUMA_POPOUT = null;
-let currentPopoutImageData = { url: '', prompt: '', base64: '' };
+// === SCENE EXTRACTION CONFIG ===
+const SCENE_SYSTEM_PROMPT = `You extract scene settings from roleplay conversations as structured JSON for anime background image generation.
 
-// --- POPOUT FUNCTIONS ---
-
-function injectPopoutHTML() {
-    if ($("#kazuma_popout").length > 0) return;
-
-    const popoutHTML = `
-        <div id="kazuma_popout" class="draggable">
-            <div class="panelControlBar" id="kazumaPopoutHeader">
-                <div class="title"><i class="fa-solid fa-paintbrush"></i> Kazuma Image</div>
-                <div class="header-controls">
-                    <div class="fa-solid fa-arrows-left-right dragReset" title="Reset Size"></div>
-                    <div class="fa-solid fa-lock-open dragLock" title="Lock Position"></div>
-                    <div id="kazuma_popout_close" class="fa-solid fa-xmark" title="Close"></div>
-                </div>
-            </div>
-            <div id="kazuma_popout_content">
-                <div id="kazuma_popout_image_container">
-                    <img id="kazuma_popout_image" />
-                    <div id="kazuma_popout_empty_state">
-                        <i class="fa-solid fa-image"></i>
-                        <div>No image generated yet</div>
-                        <small>Generate an image to see it here</small>
-                    </div>
-                    <div id="kazuma_popout_loading">
-                        <div class="spinner"></div>
-                        <span>Generating...</span>
-                    </div>
-                </div>
-                <div id="kazuma_popout_prompt"></div>
-                <div id="kazuma_popout_actions">
-                    <button id="kazuma_popout_regenerate" title="Regenerate with same prompt">
-                        <i class="fa-solid fa-rotate"></i> Regenerate
-                    </button>
-                    <button id="kazuma_popout_save" title="Save image to chat">
-                        <i class="fa-solid fa-comment"></i> To Chat
-                    </button>
-                    <button id="kazuma_popout_download" title="Download image">
-                        <i class="fa-solid fa-download"></i> Download
-                    </button>
-                </div>
-            </div>
-        </div>
-    `;
-    $("body").append(popoutHTML);
-    $KAZUMA_POPOUT = $("#kazuma_popout");
-
-    // Load saved position
-    loadKazumaPopoutPosition();
-
-    // Make it draggable
-    makeKazumaPopoutDraggable($KAZUMA_POPOUT);
-
-    // Bind popout-specific events
-    bindPopoutEvents();
+Output ONLY valid JSON with these fields:
+{
+  "location": "specific place as a danbooru tag (e.g. bedroom, forest, classroom, rooftop, city_street, cafe)",
+  "time_of_day": "one of: morning, day, afternoon, evening, night, dawn, dusk",
+  "weather": "one of: clear, cloudy, rain, snow, fog, storm, wind, none",
+  "mood": "lighting and atmosphere as comma-separated tags (e.g. warm_ambient_lighting, soft_shadows, volumetric_lighting)",
+  "key_elements": "notable background objects/architecture as comma-separated tags (e.g. bookshelf, marble_floor, ornate_furniture, tall_windows)"
 }
 
-function bindPopoutEvents() {
-    // Close button
-    $("#kazuma_popout_close").on("click", closeKazumaPopout);
+RULES:
+- Use the MOST RECENT scene description in the conversation
+- If a location change happened, use the NEW location
+- Use underscores for multi-word tags
+- Prefer specific booru/danbooru tags over vague descriptions
+- "mood" should describe LIGHTING and ATMOSPHERE, not emotions
+- "key_elements" should describe ARCHITECTURAL details, MATERIALS, FURNITURE, and NATURAL elements
+- Include material descriptions in key_elements (marble, wood, glass, stone, etc.)
+- Do NOT include character descriptions — only the environment
 
-    // Lock button
-    $("#kazumaPopoutHeader .dragLock").on("click", toggleKazumaPopoutLock);
+EXAMPLES:
+1. *They walk into the dimly lit library, rain pattering against tall windows*
+{"location":"library","time_of_day":"evening","weather":"rain","mood":"dim_lighting, warm_ambient_lighting, soft_shadows","key_elements":"bookshelf, tall_windows, rain, wooden_floor, chandelier"}
 
-    // Reset size button
-    $("#kazumaPopoutHeader .dragReset").on("click", resetKazumaPopoutSize);
+2. *The morning sun bathes the rooftop in golden light as cherry blossoms drift by*
+{"location":"rooftop","time_of_day":"morning","weather":"clear","mood":"golden_hour, cinematic_lighting, volumetric_lighting, atmospheric_haze","key_elements":"cherry_blossoms, railing, blue_sky, cityscape, fence"}
 
-    // Action buttons
-    $("#kazuma_popout_regenerate").on("click", onPopoutRegenerate);
-    $("#kazuma_popout_save").on("click", onPopoutSaveToChat);
-    $("#kazuma_popout_download").on("click", onPopoutDownload);
+3. *She enters the grand ballroom, marble floors reflecting crystal chandeliers*
+{"location":"ballroom","time_of_day":"evening","weather":"none","mood":"warm_ambient_lighting, professional_lighting, soft_shadows, volumetric_lighting","key_elements":"marble_floor, crystal_chandeliers, ornate_furniture, decorative_columns, tall_windows"}`;
 
-    // Save position on resize
-    $KAZUMA_POPOUT.on("mouseup", saveKazumaPopoutPosition);
+const SCENE_TAG_GEN_CONFIG = {
+    temperature: 0.15,
+    top_p: 0.9,
+    frequency_penalty: 0,
+    presence_penalty: 0,
+    max_tokens: 300,
+    systemPrompt: SCENE_SYSTEM_PROMPT,
+    assistantPrefill: '{"'
+};
+
+// === HELPER FUNCTIONS ===
+
+function showKazumaProgress(text = "Processing...") {
+    $("#kazuma_progress_text").text(text);
+    $("#kazuma_progress_overlay").css("display", "flex");
 }
 
-function openKazumaPopout() {
-    if (!$KAZUMA_POPOUT) injectPopoutHTML();
-    $KAZUMA_POPOUT.addClass("kazuma-popout-visible");
-    KAZUMA_POPOUT_VISIBLE = true;
-    $("#kazuma_popout_toggle").addClass("active");
+function hideKazumaProgress() {
+    $("#kazuma_progress_overlay").hide();
 }
 
-function closeKazumaPopout() {
-    if ($KAZUMA_POPOUT) {
-        $KAZUMA_POPOUT.removeClass("kazuma-popout-visible");
-    }
-    KAZUMA_POPOUT_VISIBLE = false;
-    $("#kazuma_popout_toggle").removeClass("active");
-}
-
-function toggleKazumaPopout() {
-    if (KAZUMA_POPOUT_VISIBLE) {
-        closeKazumaPopout();
-    } else {
-        openKazumaPopout();
-    }
-}
-
-function makeKazumaPopoutDraggable($element) {
-    const $header = $element.find("#kazumaPopoutHeader");
-    let isDragging = false;
-    let startX, startY, startLeft, startTop;
-
-    $header.on("mousedown", function(e) {
-        if (KAZUMA_POPOUT_LOCKED) return;
-        if ($(e.target).hasClass("dragLock") || $(e.target).hasClass("dragReset") || $(e.target).attr("id") === "kazuma_popout_close") return;
-
-        isDragging = true;
-        startX = e.clientX;
-        startY = e.clientY;
-
-        const rect = $element[0].getBoundingClientRect();
-        startLeft = rect.left;
-        startTop = rect.top;
-
-        $header.css("cursor", "grabbing");
-        e.preventDefault();
-    });
-
-    $(document).on("mousemove", function(e) {
-        if (!isDragging) return;
-
-        const deltaX = e.clientX - startX;
-        const deltaY = e.clientY - startY;
-
-        let newLeft = startLeft + deltaX;
-        let newTop = startTop + deltaY;
-
-        // Viewport constraints
-        const maxLeft = window.innerWidth - $element.outerWidth();
-        const maxTop = window.innerHeight - $element.outerHeight();
-
-        newLeft = Math.max(0, Math.min(newLeft, maxLeft));
-        newTop = Math.max(0, Math.min(newTop, maxTop));
-
-        $element.css({
-            left: newLeft + "px",
-            top: newTop + "px",
-            right: "auto"
-        });
-    });
-
-    $(document).on("mouseup", function() {
-        if (isDragging) {
-            isDragging = false;
-            $header.css("cursor", "grab");
-            saveKazumaPopoutPosition();
-        }
+function blobToBase64(blob) {
+    return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.readAsDataURL(blob);
     });
 }
 
-function saveKazumaPopoutPosition() {
-    if (!$KAZUMA_POPOUT) return;
-
-    const rect = $KAZUMA_POPOUT[0].getBoundingClientRect();
-    const pos = {
-        left: rect.left,
-        top: rect.top,
-        width: $KAZUMA_POPOUT.outerWidth(),
-        height: $KAZUMA_POPOUT.outerHeight(),
-        locked: KAZUMA_POPOUT_LOCKED
-    };
-
-    localStorage.setItem("kazuma_popout_position", JSON.stringify(pos));
-}
-
-function loadKazumaPopoutPosition() {
-    if (!$KAZUMA_POPOUT) return;
-
-    const saved = localStorage.getItem("kazuma_popout_position");
-    if (saved) {
-        try {
-            const pos = JSON.parse(saved);
-
-            // Validate position is within viewport
-            const maxLeft = window.innerWidth - 100;
-            const maxTop = window.innerHeight - 100;
-
-            const left = Math.max(0, Math.min(pos.left || 50, maxLeft));
-            const top = Math.max(0, Math.min(pos.top || 100, maxTop));
-
-            $KAZUMA_POPOUT.css({
-                left: left + "px",
-                top: top + "px",
-                right: "auto",
-                width: pos.width ? pos.width + "px" : "400px",
-                height: pos.height ? pos.height + "px" : "auto"
-            });
-
-            if (pos.locked) {
-                KAZUMA_POPOUT_LOCKED = true;
-                updateKazumaLockButtonUI();
-            }
-        } catch (e) {
-            console.warn(`[${extensionName}] Failed to load popout position`);
-        }
-    }
-}
-
-function toggleKazumaPopoutLock() {
-    KAZUMA_POPOUT_LOCKED = !KAZUMA_POPOUT_LOCKED;
-    updateKazumaLockButtonUI();
-    saveKazumaPopoutPosition();
-}
-
-function updateKazumaLockButtonUI() {
-    const $lockBtn = $("#kazumaPopoutHeader .dragLock");
-    const $header = $("#kazumaPopoutHeader");
-
-    if (KAZUMA_POPOUT_LOCKED) {
-        $lockBtn.removeClass("fa-lock-open").addClass("fa-lock locked");
-        $header.addClass("kazuma-locked");
-    } else {
-        $lockBtn.removeClass("fa-lock locked").addClass("fa-lock-open");
-        $header.removeClass("kazuma-locked");
-    }
-}
-
-function resetKazumaPopoutSize() {
-    if (!$KAZUMA_POPOUT) return;
-
-    $KAZUMA_POPOUT.css({
-        width: "400px",
-        height: "auto"
+function compressImage(base64Str, format = 'jpeg', quality = 0.9) {
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.src = base64Str;
+        img.onload = () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width;
+            canvas.height = img.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+            resolve(canvas.toDataURL(`image/${format}`, quality));
+        };
+        img.onerror = () => resolve(base64Str);
     });
-
-    saveKazumaPopoutPosition();
-    toastr.success("Pop-out size reset");
 }
 
-// --- POPOUT IMAGE HANDLING ---
+// === WORKFLOW BUILDER ===
 
-function updatePopoutImage(imageUrl, promptText, base64Data = '') {
-    if (!$KAZUMA_POPOUT) injectPopoutHTML();
-
-    const $img = $("#kazuma_popout_image");
-    const $empty = $("#kazuma_popout_empty_state");
-    const $prompt = $("#kazuma_popout_prompt");
-    const $actions = $("#kazuma_popout_actions button");
-
-    // Store current image data
-    currentPopoutImageData = {
-        url: imageUrl,
-        prompt: promptText,
-        base64: base64Data
-    };
-
-    // Update image
-    $img.attr("src", imageUrl).addClass("has-image");
-    $empty.addClass("hidden");
-
-    // Update prompt display
+function buildWorkflowPrompt(positivePrompt) {
     const s = extension_settings[extensionName];
-    if (s.showPromptInPopout && promptText) {
-        $prompt.text(promptText).addClass("visible");
+    const workflow = JSON.parse(JSON.stringify(HARDCODED_WORKFLOW));
+
+    // Inject model (node 4 = CheckpointLoaderSimple)
+    workflow["4"].inputs.ckpt_name = s.selectedModel;
+
+    // LoRA configuration
+    if (s.selectedLora && s.selectedLora !== "" && s.selectedLora !== "None") {
+        // Use LoRA
+        workflow["35"].inputs.lora_name = s.selectedLora;
+        workflow["35"].inputs.strength_model = s.selectedLoraWt || 1.0;
+        workflow["35"].inputs.strength_clip = s.selectedLoraWt || 1.0;
     } else {
-        $prompt.removeClass("visible");
+        // No LoRA - remove node 35 and rewire to use checkpoint directly
+        delete workflow["35"];
+        workflow["6"].inputs.clip = ["4", 1];  // CLIP from checkpoint
+        workflow["7"].inputs.clip = ["4", 1];  // CLIP from checkpoint
+        workflow["3"].inputs.model = ["4", 0]; // Model from checkpoint
     }
 
-    // Enable action buttons
-    $actions.prop("disabled", false);
+    // Inject prompts (node 6 = positive, node 7 = negative)
+    workflow["6"].inputs.text = positivePrompt;
+    workflow["7"].inputs.text = HARDCODED_NEGATIVE;
 
-    // Hide loading
-    hidePopoutLoading();
+    // Random seed (node 3 = KSampler)
+    workflow["3"].inputs.seed = Math.floor(Math.random() * 2147483647);
+
+    return workflow;
 }
 
-function showPopoutLoading(text = "Generating...") {
-    if (!$KAZUMA_POPOUT) injectPopoutHTML();
+// === SCENE EXTRACTION ===
 
-    const $loading = $("#kazuma_popout_loading");
-    $loading.find("span").text(text);
-    $loading.addClass("visible");
+function validateAndRepairSceneState(sceneJson) {
+    const VALID_TIMES = ['morning', 'day', 'afternoon', 'evening', 'night', 'dawn', 'dusk'];
+    const VALID_WEATHER = ['clear', 'cloudy', 'rain', 'snow', 'fog', 'storm', 'wind', 'none'];
 
-    // Disable action buttons while loading
-    $("#kazuma_popout_actions button").prop("disabled", true);
-}
-
-function hidePopoutLoading() {
-    $("#kazuma_popout_loading").removeClass("visible");
-}
-
-// --- POPOUT ACTION HANDLERS ---
-
-async function onPopoutRegenerate() {
-    if (!currentPopoutImageData.prompt) {
-        toastr.warning("No prompt available to regenerate");
-        return;
+    if (!sceneJson.location || typeof sceneJson.location !== 'string') {
+        sceneJson.location = 'indoors';
+    }
+    if (!sceneJson.time_of_day || !VALID_TIMES.includes(sceneJson.time_of_day)) {
+        sceneJson.time_of_day = 'day';
+    }
+    if (!sceneJson.weather || !VALID_WEATHER.includes(sceneJson.weather)) {
+        sceneJson.weather = 'clear';
+    }
+    if (sceneJson.mood && typeof sceneJson.mood !== 'string') {
+        sceneJson.mood = '';
+    }
+    if (sceneJson.key_elements && typeof sceneJson.key_elements !== 'string') {
+        sceneJson.key_elements = '';
     }
 
-    toastr.info("Regenerating image...", "Image Gen Kazuma");
-    showPopoutLoading("Regenerating...");
-    showKazumaProgress("Regenerating Image...");
-
-    try {
-        await generateWithComfy(currentPopoutImageData.prompt, null);
-    } catch (err) {
-        hidePopoutLoading();
-        hideKazumaProgress();
-        toastr.error(`Regeneration failed: ${err.message}`);
-    }
+    return sceneJson;
 }
 
-async function onPopoutSaveToChat() {
-    if (!currentPopoutImageData.url) {
-        toastr.warning("No image to save");
-        return;
-    }
+function buildBackgroundPrompt(sceneJson) {
+    const parts = [];
 
-    try {
-        toastr.info("Saving to chat...", "Image Gen Kazuma");
+    // Environment base tags
+    parts.push('no_humans', 'scenery', 'detailed_environment');
 
-        // Use the stored base64 if available, otherwise fetch from URL
-        let base64FullURL = currentPopoutImageData.base64;
-        if (!base64FullURL) {
-            const response = await fetch(currentPopoutImageData.url);
-            const blob = await response.blob();
-            base64FullURL = await blobToBase64(blob);
-        }
+    // Composition tags for proper VN background framing
+    parts.push('eye_level', 'centered_composition', 'depth_of_field', 'wide_shot');
 
-        let format = "png";
-        if (extension_settings[extensionName].compressImages) {
-            base64FullURL = await compressImage(base64FullURL, 0.9);
-            format = "jpeg";
-        }
+    // Location
+    const location = sceneJson.location.toLowerCase().replace(/\s+/g, '_');
+    parts.push(location);
 
-        const base64Raw = base64FullURL.split(',')[1];
-        const context = getContext();
-        let characterName = "User";
-        if (context.groupId) {
-            characterName = context.groups.find(x => x.id === context.groupId)?.id;
-        } else if (context.characterId) {
-            characterName = context.characters[context.characterId]?.name;
-        }
-        if (!characterName) characterName = "User";
-
-        const filename = `${characterName}_${humanizedDateTime()}`;
-        const savedPath = await saveBase64AsFile(base64Raw, characterName, filename, format);
-
-        const mediaAttachment = {
-            url: savedPath,
-            type: "image",
-            source: "generated",
-            title: currentPopoutImageData.prompt,
-            generation_type: "free",
-        };
-
-        const newMessage = {
-            name: "Image Gen Kazuma", is_user: false, is_system: true, send_date: Date.now(),
-            mes: "", extra: { media: [mediaAttachment], media_display: "gallery", media_index: 0, inline_image: false }, force_avatar: "img/five.png"
-        };
-        context.chat.push(newMessage);
-        await saveChat();
-        if (typeof addOneMessage === "function") addOneMessage(newMessage);
-        else await reloadCurrentChat();
-
-        toastr.success("Image saved to chat!");
-    } catch (err) {
-        console.error(err);
-        toastr.error("Failed to save to chat");
-    }
-}
-
-function onPopoutDownload() {
-    if (!currentPopoutImageData.url) {
-        toastr.warning("No image to download");
-        return;
+    // Key elements (architectural/natural)
+    if (sceneJson.key_elements) {
+        sceneJson.key_elements.split(',').map(t => t.trim().replace(/\s+/g, '_'))
+            .filter(t => t).forEach(t => parts.push(t));
     }
 
-    try {
-        const link = document.createElement("a");
-        link.href = currentPopoutImageData.url;
-        link.download = `kazuma_${Date.now()}.png`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        toastr.success("Download started");
-    } catch (err) {
-        console.error(err);
-        toastr.error("Download failed");
+    // Time of day mappings
+    const TIME_MAPPINGS = {
+        'morning': ['morning', 'sunlight', 'blue_sky'],
+        'day': ['day', 'blue_sky', 'sunlight'],
+        'afternoon': ['afternoon', 'sunlight', 'warm_lighting'],
+        'evening': ['evening', 'orange_sky', 'sunset', 'warm_ambient_lighting'],
+        'night': ['night', 'night_sky', 'moonlight', 'dark'],
+        'dawn': ['dawn', 'sunrise', 'gradient_sky', 'atmospheric_haze'],
+        'dusk': ['dusk', 'twilight', 'purple_sky', 'soft_shadows']
+    };
+    parts.push(...(TIME_MAPPINGS[sceneJson.time_of_day] || ['day']));
+
+    // Weather mappings
+    const WEATHER_MAPPINGS = {
+        'clear': ['clear_sky'],
+        'cloudy': ['cloudy', 'overcast'],
+        'rain': ['rain', 'wet', 'puddle'],
+        'snow': ['snowing', 'snow'],
+        'fog': ['fog', 'mist', 'atmospheric_haze'],
+        'storm': ['storm', 'lightning', 'dark_clouds', 'dramatic_lighting'],
+        'wind': ['wind', 'dynamic_clouds'],
+        'none': []
+    };
+    parts.push(...(WEATHER_MAPPINGS[sceneJson.weather] || []));
+
+    // Mood/lighting from LLM
+    if (sceneJson.mood) {
+        sceneJson.mood.split(',').map(t => t.trim().replace(/\s+/g, '_'))
+            .filter(t => t).forEach(t => parts.push(t));
     }
+
+    // Quality tags (Illustrious)
+    parts.push(...ILLUSTRIOUS_QUALITY_TAGS.split(', '));
+
+    // Dedupe and join
+    return parts.filter((t, i, arr) => arr.indexOf(t) === i).join(', ');
 }
 
-async function loadSettings() {
-    if (!extension_settings[extensionName]) extension_settings[extensionName] = {};
-    for (const key in defaultSettings) {
-        if (typeof extension_settings[extensionName][key] === 'undefined') {
-            extension_settings[extensionName][key] = defaultSettings[key];
-        }
+async function generateScenePrompt(sceneText) {
+    const s = extension_settings[extensionName];
+
+    if (!s.tagApiEndpoint || !s.tagModel) {
+        throw new Error("Scene Extraction API not configured. Please set endpoint and model.");
     }
 
-    $("#kazuma_enable").prop("checked", extension_settings[extensionName].enabled);
-    $("#kazuma_debug").prop("checked", extension_settings[extensionName].debugPrompt);
-    $("#kazuma_url").val(extension_settings[extensionName].comfyUrl);
-    $("#kazuma_width").val(extension_settings[extensionName].imgWidth);
-    $("#kazuma_height").val(extension_settings[extensionName].imgHeight);
-    $("#kazuma_auto_enable").prop("checked", extension_settings[extensionName].autoGenEnabled);
-    $("#kazuma_auto_freq").val(extension_settings[extensionName].autoGenFreq);
+    const messages = [
+        { role: 'system', content: SCENE_TAG_GEN_CONFIG.systemPrompt },
+        { role: 'user', content: sceneText }
+    ];
 
-    // Tag API Settings
-    $("#kazuma_tag_endpoint").val(extension_settings[extensionName].tagApiEndpoint || "");
-    $("#kazuma_tag_api_key").val(extension_settings[extensionName].tagApiKey || "");
-    $("#kazuma_tag_model").val(extension_settings[extensionName].tagModel || "");
-
-    // Pop-out Settings
-    $("#kazuma_use_popout").prop("checked", extension_settings[extensionName].usePopout);
-    $("#kazuma_auto_open_popout").prop("checked", extension_settings[extensionName].autoOpenPopout);
-    $("#kazuma_show_prompt_popout").prop("checked", extension_settings[extensionName].showPromptInPopout);
-    $("#kazuma_also_save_chat").prop("checked", extension_settings[extensionName].alsoSaveToChat);
-
-    $("#kazuma_lora_wt").val(extension_settings[extensionName].selectedLoraWt);
-    $("#kazuma_lora_wt_display").text(extension_settings[extensionName].selectedLoraWt);
-    $("#kazuma_lora_wt_2").val(extension_settings[extensionName].selectedLoraWt2);
-    $("#kazuma_lora_wt_display_2").text(extension_settings[extensionName].selectedLoraWt2);
-    $("#kazuma_lora_wt_3").val(extension_settings[extensionName].selectedLoraWt3);
-    $("#kazuma_lora_wt_display_3").text(extension_settings[extensionName].selectedLoraWt3);
-    $("#kazuma_lora_wt_4").val(extension_settings[extensionName].selectedLoraWt4);
-    $("#kazuma_lora_wt_display_4").text(extension_settings[extensionName].selectedLoraWt4);
-
-    $("#kazuma_negative").val(extension_settings[extensionName].customNegative);
-    $("#kazuma_seed").val(extension_settings[extensionName].customSeed);
-    $("#kazuma_compress").prop("checked", extension_settings[extensionName].compressImages);
-
-    updateSliderInput('kazuma_steps', 'kazuma_steps_val', extension_settings[extensionName].steps);
-    updateSliderInput('kazuma_cfg', 'kazuma_cfg_val', extension_settings[extensionName].cfg);
-    updateSliderInput('kazuma_denoise', 'kazuma_denoise_val', extension_settings[extensionName].denoise);
-    updateSliderInput('kazuma_clip', 'kazuma_clip_val', extension_settings[extensionName].clipSkip);
-
-    populateResolutions();
-    populateWorkflows();
-    await fetchComfyLists();
-}
-
-function updateSliderInput(sliderId, numberId, value) {
-    $(`#${sliderId}`).val(value);
-    $(`#${numberId}`).val(value);
-}
-
-function populateResolutions() {
-    const sel = $("#kazuma_resolution_list");
-    sel.empty().append('<option value="">-- Select Preset --</option>');
-    RESOLUTIONS.forEach((r, idx) => {
-        sel.append(`<option value="${idx}">${r.label}</option>`);
-    });
-}
-
-// --- WORKFLOW MANAGER ---
-async function populateWorkflows() {
-    const sel = $("#kazuma_workflow_list");
-    sel.empty();
-    try {
-        const response = await fetch('/api/sd/comfy/workflows', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ url: extension_settings[extensionName].comfyUrl }),
-        });
-
-        if (response.ok) {
-            const workflows = await response.json();
-            workflows.forEach(w => {
-                sel.append(`<option value="${w}">${w}</option>`);
-            });
-
-            if (extension_settings[extensionName].currentWorkflowName) {
-                if (workflows.includes(extension_settings[extensionName].currentWorkflowName)) {
-                    sel.val(extension_settings[extensionName].currentWorkflowName);
-                } else if (workflows.length > 0) {
-                    sel.val(workflows[0]);
-                    extension_settings[extensionName].currentWorkflowName = workflows[0];
-                    saveSettingsDebounced();
-                }
-            } else if (workflows.length > 0) {
-                sel.val(workflows[0]);
-                extension_settings[extensionName].currentWorkflowName = workflows[0];
-                saveSettingsDebounced();
-            }
-        }
-    } catch (e) {
-        sel.append('<option disabled>Failed to load</option>');
+    if (SCENE_TAG_GEN_CONFIG.assistantPrefill) {
+        messages.push({ role: 'assistant', content: SCENE_TAG_GEN_CONFIG.assistantPrefill });
     }
-}
 
-async function onComfyNewWorkflowClick() {
-    let name = await prompt("New workflow file name (e.g. 'my_flux.json'):");
-    if (!name) return;
-    if (!name.toLowerCase().endsWith('.json')) name += '.json';
-
-    try {
-        const res = await fetch('/api/sd/comfy/save-workflow', {
-            method: 'POST', headers: getRequestHeaders(),
-            body: JSON.stringify({ file_name: name, workflow: '{}' })
-        });
-        if (!res.ok) throw new Error(await res.text());
-        toastr.success("Workflow created!");
-        await populateWorkflows();
-        $("#kazuma_workflow_list").val(name).trigger('change');
-        setTimeout(onComfyOpenWorkflowEditorClick, 500);
-    } catch (e) { toastr.error(e.message); }
-}
-
-async function onComfyDeleteWorkflowClick() {
-    const name = extension_settings[extensionName].currentWorkflowName;
-    if (!name) return;
-    if (!confirm(`Delete ${name}?`)) return;
-
-    try {
-        const res = await fetch('/api/sd/comfy/delete-workflow', {
-            method: 'POST', headers: getRequestHeaders(),
-            body: JSON.stringify({ file_name: name })
-        });
-        if (!res.ok) throw new Error(await res.text());
-        toastr.success("Deleted.");
-        await populateWorkflows();
-    } catch (e) { toastr.error(e.message); }
-}
-
-/* --- WORKFLOW STUDIO (Live Capture Fix) --- */
-async function onComfyOpenWorkflowEditorClick() {
-    const name = extension_settings[extensionName].currentWorkflowName;
-    if (!name) return toastr.warning("No workflow selected");
-
-    // 1. Load Data
-    let loadedContent = "{}";
-    try {
-        const res = await fetch('/api/sd/comfy/workflow', {
-            method: 'POST', headers: getRequestHeaders(),
-            body: JSON.stringify({ file_name: name })
-        });
-        if (res.ok) {
-            const rawBody = await res.json();
-            let jsonObj = rawBody;
-            if (typeof rawBody === 'string') {
-                try { jsonObj = JSON.parse(rawBody); } catch(e) {}
-            }
-            loadedContent = JSON.stringify(jsonObj, null, 4);
-        }
-    } catch (e) { toastr.error("Failed to load file. Starting empty."); }
-
-    // 2. Variable to hold the text in memory (Critical for saving)
-    let currentJsonText = loadedContent;
-
-    // --- UI BUILDER ---
-    const $container = $(`
-        <div style="display: flex; flex-direction: column; width: 100%; gap: 10px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--smart-border-color); padding-bottom:10px;">
-                <h3 style="margin:0;">${name}</h3>
-                <div style="display:flex; gap:5px;">
-                    <button class="menu_button wf-format" title="Beautify JSON"><i class="fa-solid fa-align-left"></i> Format</button>
-                    <button class="menu_button wf-import" title="Upload .json file"><i class="fa-solid fa-upload"></i> Import</button>
-                    <button class="menu_button wf-export" title="Download .json file"><i class="fa-solid fa-download"></i> Export</button>
-                    <input type="file" class="wf-file-input" accept=".json" style="display:none;" />
-                </div>
-            </div>
-
-            <div style="display: flex; gap: 15px;">
-                <textarea class="text_pole wf-textarea" spellcheck="false"
-                    style="flex: 1; min-height: 600px; height: 600px; font-family: 'Consolas', 'Monaco', monospace; white-space: pre; resize: none; font-size: 13px; padding: 10px; line-height: 1.4;"></textarea>
-
-                <div style="width: 250px; flex-shrink: 0; display: flex; flex-direction: column; border-left: 1px solid var(--smart-border-color); padding-left: 10px; max-height: 600px;">
-                    <h4 style="margin: 0 0 10px 0; opacity:0.8;">Placeholders</h4>
-                    <div class="wf-list" style="overflow-y: auto; flex: 1; padding-right: 5px;"></div>
-                </div>
-            </div>
-            <small style="opacity:0.5;">Tip: Ensure your JSON is valid before saving.</small>
-        </div>
-    `);
-
-    // --- LOGIC ---
-    const $textarea = $container.find('.wf-textarea');
-    const $list = $container.find('.wf-list');
-    const $fileInput = $container.find('.wf-file-input');
-
-    // Initialize UI
-    $textarea.val(currentJsonText);
-
-    // Sidebar Generator
-    KAZUMA_PLACEHOLDERS.forEach(item => {
-        const $itemDiv = $('<div></div>')
-            .css({
-                'padding': '8px 6px', 'margin-bottom': '6px', 'background-color': 'rgba(0,0,0,0.1)',
-                'border-radius': '4px', 'font-family': 'monospace', 'font-size': '12px',
-                'border': '1px solid transparent', 'transition': 'all 0.2s', 'cursor': 'text'
-            });
-        const $keySpan = $('<span></span>').text(item.key).css({'font-weight': 'bold', 'color': 'var(--smart-text-color)'});
-        const $descSpan = $('<div></div>').text(item.desc).css({ 'font-size': '11px', 'opacity': '0.7', 'margin-top': '2px', 'font-family': 'sans-serif' });
-        $itemDiv.append($keySpan).append($descSpan);
-        $list.append($itemDiv);
-    });
-
-    // Highlighting & LIVE UPDATE Logic
-    const updateState = () => {
-        // 1. Capture text into memory variable
-        currentJsonText = $textarea.val();
-
-        // 2. Run Highlighting logic (Visuals)
-        $list.children().each(function() {
-            const cleanKey = $(this).find('span').first().text().replace(/"/g, '');
-            if (currentJsonText.includes(cleanKey)) $(this).css({'border': '1px solid #4caf50', 'background-color': 'rgba(76, 175, 80, 0.1)'});
-            else $(this).css({'border': '1px solid transparent', 'background-color': 'rgba(0,0,0,0.1)'});
-        });
+    const requestBody = {
+        model: s.tagModel,
+        messages: messages,
+        max_tokens: SCENE_TAG_GEN_CONFIG.max_tokens,
+        temperature: SCENE_TAG_GEN_CONFIG.temperature,
+        top_p: SCENE_TAG_GEN_CONFIG.top_p,
+        frequency_penalty: SCENE_TAG_GEN_CONFIG.frequency_penalty,
+        presence_penalty: SCENE_TAG_GEN_CONFIG.presence_penalty
     };
 
-    // Bind Input Listener to update variable immediately
-    $textarea.on('input', updateState);
-    setTimeout(updateState, 100);
+    const headers = { 'Content-Type': 'application/json' };
+    if (s.tagApiKey) {
+        headers['Authorization'] = `Bearer ${s.tagApiKey}`;
+    }
 
-    // Toolbar Actions
-    $container.find('.wf-format').on('click', () => {
+    const response = await fetch(s.tagApiEndpoint, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify(requestBody)
+    });
+
+    if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Scene API request failed (${response.status}): ${error}`);
+    }
+
+    const data = await response.json();
+    let result = data.choices[0].message.content;
+
+    // Strip thinking tags
+    if (result.includes('</think>')) {
+        result = result.split('</think>').pop().trim();
+    }
+    result = result.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    result = result.replace(/<\/?think>/gi, '').trim();
+
+    // Prepend assistant prefill if needed
+    if (SCENE_TAG_GEN_CONFIG.assistantPrefill && !result.trim().startsWith('{')) {
+        result = SCENE_TAG_GEN_CONFIG.assistantPrefill + result;
+    }
+
+    // Extract JSON
+    let jsonStr = result;
+    const jsonMatch = result.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (jsonMatch) {
+        jsonStr = jsonMatch[1].trim();
+    } else {
+        const objMatch = result.match(/\{[\s\S]*?\}/);
+        if (objMatch) jsonStr = objMatch[0];
+    }
+
+    let sceneJson;
+    try {
+        sceneJson = JSON.parse(jsonStr);
+    } catch (e) {
+        console.error(`[${extensionName}] Failed to parse scene JSON: ${jsonStr}`);
+        sceneJson = { location: 'indoors', time_of_day: 'day', weather: 'clear', mood: '', key_elements: '' };
+    }
+
+    sceneJson = validateAndRepairSceneState(sceneJson);
+    console.log(`[${extensionName}] Extracted scene:`, sceneJson);
+
+    const prompt = buildBackgroundPrompt(sceneJson);
+    console.log(`[${extensionName}] Generated prompt: ${prompt}`);
+
+    return prompt;
+}
+
+// === BACKGROUND GENERATION ===
+
+async function onGeneratePrompt() {
+    if (!extension_settings[extensionName].enabled) return;
+    if (isGenerating) return;
+
+    const context = getContext();
+    if (!context.chat || context.chat.length === 0) {
+        toastr.warning("No chat history.");
+        return;
+    }
+
+    const s = extension_settings[extensionName];
+
+    if (!s.tagApiEndpoint || !s.tagModel) {
+        toastr.error("Scene Extraction API not configured. Please set endpoint and model.");
+        return;
+    }
+
+    if (!s.selectedModel) {
+        toastr.error("No checkpoint selected. Please select a model in the extension settings.");
+        return;
+    }
+
+    // Validate model exists in dropdown (helps catch stale selections)
+    const modelExists = $("#kazuma_model_list option").filter((_, el) => el.value === s.selectedModel).length > 0;
+    if (!modelExists) {
+        console.warn(`[${extensionName}] Selected model "${s.selectedModel}" not found in dropdown. Refreshing lists...`);
+        await fetchComfyLists();
+    }
+
+    isGenerating = true;
+    showKazumaProgress("Checking ComfyUI...");
+
+    // Check if ComfyUI is ready
+    const comfyReady = await checkComfyUIReady();
+    if (!comfyReady) {
+        hideKazumaProgress();
+        isGenerating = false;
+        toastr.warning("ComfyUI is still loading models. Please wait a moment and try again.");
+        return;
+    }
+
+    showKazumaProgress("Extracting Scene...");
+
+    try {
+        const NUM_CONTEXT_MESSAGES = 5;
+        const recentMessages = context.chat.slice(-NUM_CONTEXT_MESSAGES)
+            .map(msg => `${msg.is_user ? 'User' : 'Character'}: ${msg.mes}`)
+            .join('\n\n');
+
+        const sceneText = `Analyze the conversation below. Determine the CURRENT SCENE/SETTING where the action is taking place.\n\n${recentMessages}`;
+
+        const generatedText = await generateScenePrompt(sceneText);
+
+        showKazumaProgress("Sending to ComfyUI...");
+        await generateWithComfy(generatedText);
+
+    } catch (err) {
+        hideKazumaProgress();
+        console.error(err);
+        toastr.error(`Generation failed: ${err.message}`);
+    } finally {
+        isGenerating = false;
+    }
+}
+
+async function generateWithComfy(positivePrompt) {
+    const comfyUrl = extension_settings[extensionName].comfyUrl;
+
+    // Build workflow with injected parameters
+    const workflow = buildWorkflowPrompt(positivePrompt);
+
+    console.log(`[${extensionName}] Sending workflow to ComfyUI`);
+
+    try {
+        // Direct connection to ComfyUI
+        const res = await fetch(`${comfyUrl}/prompt`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt: workflow })
+        });
+        const data = await res.json();
+        console.log(`[${extensionName}] ComfyUI response:`, data);
+
+        // Log node_errors first for debugging
+        if (data.node_errors && Object.keys(data.node_errors).length > 0) {
+            console.error(`[${extensionName}] Node errors detail:`, JSON.stringify(data.node_errors, null, 2));
+        }
+
+        // Check for validation errors in response
+        if (data.error) {
+            console.error(`[${extensionName}] ComfyUI error:`, data.error);
+            const fullDetails = JSON.stringify(data);
+
+            if (fullDetails.includes('not in []') || fullDetails.includes('Value not in list')) {
+                throw new Error("ComfyUI hasn't finished loading models. Please wait a moment and try again, or refresh ComfyUI.");
+            }
+            const errorMsg = typeof data.error === 'string' ? data.error :
+                             (data.error.message || JSON.stringify(data.error));
+            throw new Error(errorMsg);
+        }
+
+        if (!data.prompt_id) {
+            console.error(`[${extensionName}] No prompt_id in response:`, data);
+            throw new Error("ComfyUI rejected the workflow - check browser console for details");
+        }
+
+        await waitForGeneration(comfyUrl, data.prompt_id, positivePrompt);
+    } catch (e) {
+        hideKazumaProgress();
+        toastr.error("ComfyUI Error: " + e.message);
+        console.error(`[${extensionName}] Full error:`, e);
+    }
+}
+
+async function waitForGeneration(baseUrl, promptId, positivePrompt) {
+    showKazumaProgress("Rendering Image...");
+
+    const checkInterval = setInterval(async () => {
         try {
-            const formatted = JSON.stringify(JSON.parse($textarea.val()), null, 4);
-            $textarea.val(formatted);
-            updateState(); // Update variable
-            toastr.success("Formatted");
-        } catch(e) { toastr.warning("Invalid JSON"); }
-    });
+            const h = await (await fetch(`${baseUrl}/history/${promptId}`)).json();
+            if (h[promptId]) {
+                clearInterval(checkInterval);
+                const outputs = h[promptId].outputs;
+                let finalImage = null;
 
-    $container.find('.wf-import').on('click', () => $fileInput.click());
-    $fileInput.on('change', (e) => {
-        if (!e.target.files[0]) return;
-        const r = new FileReader(); r.onload = (ev) => {
-            $textarea.val(ev.target.result);
-            updateState(); // Update variable
-            toastr.success("Imported");
-        };
-        r.readAsText(e.target.files[0]); $fileInput.val('');
-    });
+                for (const nodeId in outputs) {
+                    const nodeOutput = outputs[nodeId];
+                    if (nodeOutput.images && nodeOutput.images.length > 0) {
+                        finalImage = nodeOutput.images[0];
+                        break;
+                    }
+                }
 
-    $container.find('.wf-export').on('click', () => {
-        try { JSON.parse(currentJsonText); const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([currentJsonText], {type:"application/json"})); a.download = name; a.click(); } catch(e) { toastr.warning("Invalid content"); }
-    });
-
-    // Validating Closure
-    const onClosing = () => {
-        try {
-            JSON.parse(currentJsonText); // Validate the variable, not the UI
-            return true;
+                if (finalImage) {
+                    showKazumaProgress("Setting Background...");
+                    const imgUrl = `${baseUrl}/view?filename=${finalImage.filename}&subfolder=${finalImage.subfolder}&type=${finalImage.type}`;
+                    await insertImageToChat(imgUrl);
+                    hideKazumaProgress();
+                } else {
+                    hideKazumaProgress();
+                    toastr.warning("No image output found");
+                }
+            }
         } catch (e) {
-            toastr.error("Invalid JSON. Cannot save.");
+            // Keep polling
+        }
+    }, 1000);
+}
+
+// === SAVE AS BACKGROUND (Simplified) ===
+
+async function saveAsBackground(base64FullURL) {
+    try {
+        const fetchRes = await fetch(base64FullURL);
+        const blob = await fetchRes.blob();
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const filename = `vnbg_${timestamp}.png`;
+
+        const formData = new FormData();
+        formData.set('avatar', blob, filename);
+
+        const uploadRes = await fetch('/api/backgrounds/upload', {
+            method: 'POST',
+            headers: getRequestHeaders({ omitContentType: true }),
+            body: formData,
+            cache: 'no-cache',
+        });
+
+        if (!uploadRes.ok) throw new Error('Background upload failed');
+        const bgName = await uploadRes.text();
+
+        // Set as active background
+        $('#bg1').css('background-image', `url("backgrounds/${encodeURIComponent(bgName)}")`);
+    } catch (err) {
+        console.error(`[${extensionName}] saveAsBackground failed:`, err);
+        toastr.error(`Failed to set background: ${err.message}`);
+    }
+}
+
+async function insertImageToChat(imgUrl) {
+    try {
+        const response = await fetch(imgUrl);
+        const blob = await response.blob();
+        let base64FullURL = await blobToBase64(blob);
+
+        // No compression - keep original quality from ComfyUI
+
+        // Always save as background
+        await saveAsBackground(base64FullURL);
+
+    } catch (err) {
+        console.error(err);
+        toastr.error("Failed to process image.");
+    }
+}
+
+// === COMFYUI CONNECTION ===
+
+async function checkComfyUIReady() {
+    const comfyUrl = extension_settings[extensionName].comfyUrl;
+    try {
+        // Check if ComfyUI has loaded its models by fetching object_info
+        const res = await fetch(`${comfyUrl}/object_info/CheckpointLoaderSimple`);
+        if (!res.ok) return false;
+
+        const data = await res.json();
+        const checkpoints = data?.CheckpointLoaderSimple?.input?.required?.ckpt_name?.[0];
+
+        if (!checkpoints || checkpoints.length === 0) {
+            console.warn(`[${extensionName}] ComfyUI model list is empty - still loading`);
             return false;
         }
-    };
 
-    const popup = new Popup($container, POPUP_TYPE.CONFIRM, '', { okButton: 'Save Changes', cancelButton: 'Cancel', wide: true, large: true, onClosing: onClosing });
-    const confirmed = await popup.show();
-
-    // SAVING
-    if (confirmed) {
-        try {
-            console.log(`[${extensionName}] Saving workflow: ${name}`);
-            // Minify
-            const minified = JSON.stringify(JSON.parse(currentJsonText));
-            const res = await fetch('/api/sd/comfy/save-workflow', {
-                method: 'POST', headers: getRequestHeaders(),
-                body: JSON.stringify({ file_name: name, workflow: minified })
-            });
-
-            if (!res.ok) throw new Error(await res.text());
-            toastr.success("Workflow Saved!");
-        } catch (e) {
-            toastr.error("Save Failed: " + e.message);
-        }
+        console.log(`[${extensionName}] ComfyUI ready with ${checkpoints.length} models`);
+        return true;
+    } catch (e) {
+        console.warn(`[${extensionName}] ComfyUI not ready:`, e.message);
+        return false;
     }
 }
 
+async function onTestConnection() {
+    const url = extension_settings[extensionName].comfyUrl;
+    try {
+        const result = await fetch('/api/sd/comfy/ping', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ url: url })
+        });
+        if (result.ok) {
+            console.log(`[${extensionName}] ComfyUI API connected`);
+            await fetchComfyLists();
+        } else {
+            throw new Error('ComfyUI returned an error via proxy.');
+        }
+    } catch (error) {
+        toastr.error(`Connection failed: ${error.message}`, "VN Background Gen");
+    }
+}
 
-
-// --- FETCH LISTS ---
 async function fetchComfyLists() {
     const comfyUrl = extension_settings[extensionName].comfyUrl;
     const modelSel = $("#kazuma_model_list");
-    const samplerSel = $("#kazuma_sampler_list");
-    const loraSelectors = [ $("#kazuma_lora_list"), $("#kazuma_lora_list_2"), $("#kazuma_lora_list_3"), $("#kazuma_lora_list_4") ];
+    const loraSelectors = [
+        $("#kazuma_lora_list"),
+        $("#kazuma_lora_list_2"),
+        $("#kazuma_lora_list_3"),
+        $("#kazuma_lora_list_4")
+    ];
 
     try {
-        const modelRes = await fetch('/api/sd/comfy/models', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify({ url: comfyUrl }) });
+        // Fetch models
+        const modelRes = await fetch('/api/sd/comfy/models', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ url: comfyUrl })
+        });
+
         if (modelRes.ok) {
             const models = await modelRes.json();
             modelSel.empty().append('<option value="">-- Select Model --</option>');
@@ -783,17 +668,12 @@ async function fetchComfyLists() {
                 let text = (typeof m === 'object' && m !== null && m.text) ? m.text : val;
                 modelSel.append(`<option value="${val}">${text}</option>`);
             });
-            if (extension_settings[extensionName].selectedModel) modelSel.val(extension_settings[extensionName].selectedModel);
+            if (extension_settings[extensionName].selectedModel) {
+                modelSel.val(extension_settings[extensionName].selectedModel);
+            }
         }
 
-        const samplerRes = await fetch('/api/sd/comfy/samplers', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify({ url: comfyUrl }) });
-        if (samplerRes.ok) {
-            const samplers = await samplerRes.json();
-            samplerSel.empty();
-            samplers.forEach(s => samplerSel.append(`<option value="${s}">${s}</option>`));
-            if (extension_settings[extensionName].selectedSampler) samplerSel.val(extension_settings[extensionName].selectedSampler);
-        }
-
+        // Fetch LoRAs
         const loraRes = await fetch(`${comfyUrl}/object_info/LoraLoader`);
         if (loraRes.ok) {
             const json = await loraRes.json();
@@ -811,7248 +691,82 @@ async function fetchComfyLists() {
     }
 }
 
-async function onTestConnection() {
-    const url = extension_settings[extensionName].comfyUrl;
-    try {
-        const result = await fetch('/api/sd/comfy/ping', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify({ url: url }) });
-        if (result.ok) {
-            toastr.success("ComfyUI API connected!", "Image Gen Kazuma");
-            await fetchComfyLists();
-        } else { throw new Error('ComfyUI returned an error via proxy.'); }
-    } catch (error) { toastr.error(`Connection failed: ${error.message}`, "Image Gen Kazuma"); }
-}
+// === MESSAGE HANDLER (Auto-generate on every AI message) ===
 
-/* --- TAG GENERATION CONFIG (Hardcoded) --- */
-const TAG_GEN_CONFIG = {
-    temperature: 0.4,
-    top_p: 0.85,
-    frequency_penalty: 0,
-    presence_penalty: 1.5,
-    max_tokens: 1000,
-    systemPrompt: `Generate danbooru tags for the scene. Output ONLY comma-separated tags.
-Use ONLY standard single-concept danbooru tags. Never add adjective modifiers to tags.
-WRONG: subtle_smile, harsh_sunlight, gentle_expression, dark_room
-RIGHT: smile, sunlight, serious, dark
+let isGenerating = false;
+let lastGenerationTime = 0;
+const GENERATION_COOLDOWN = 5000; // 5 second cooldown between generations
 
-Include: pose, expression, setting, clothing, lighting, camera angle
-Exclude: hair/eye color, body features, abstract concepts, emotions as nouns
-
-Example 1:
-A woman sitting on a bed, blushing, looking away, wearing a shirt, indoors at night.
-Tags: sitting, bed, bedroom, blush, looking_to_the_side, shirt, indoors, night, upper_body
-
-Example 2:
-A woman standing on a beach in a blue bikini, waving, smiling, bright sunny day.
-Tags: standing, beach, bikini, waving, smile, outdoors, day, ocean, sky, sand, cowboy_shot
-
-Example 3:
-A woman pacing in a desert, focused expression, harsh sunlight, wearing a blazer and skirt.
-Tags: standing, desert, outdoors, serious, sunlight, blazer, skirt, day, sand`,
-    jailbreakPrompt: "Tags: /nothink",
-    assistantPrefill: ""
-};
-
-/* --- VISUAL DESCRIPTION CONFIG (Stage 1: Summarize before tagging) --- */
-const DESCRIPTION_GEN_CONFIG = {
-    temperature: 0.4,
-    top_p: 0.85,
-    frequency_penalty: 0,
-    presence_penalty: 1.5,
-    max_tokens: 2048,
-    systemPrompt: `You are a visual scene descriptor. Given roleplay text, extract ONLY the visual elements into a single short sentence. Keep it simple and concise - under 30 words.
-
-Focus on: pose, expression, clothing, setting, lighting.
-Exclude: dialogue, thoughts, plot, names (use "a woman", "a girl", etc.)
-
-Example Input:
-*Eva nods, her mind latching onto the technical challenge. The playful warmth in her expression recedes, replaced by laser-focused analytical mode. She paces a short circle in the sand, her icy-blue eyes sharp. The desert sun beats down.*
-
-Example Output:
-A woman with blue eyes pacing in a desert, focused expression, harsh sunlight.`
-};
-
-/* --- TAG POST-PROCESSING WITH BOORU VALIDATION --- */
-
-// Valid booru tags (extracted from danbooru dataset - category 0 tags with 500+ posts)
-const VALID_BOORU_TAGS = new Set([
-    '!', '!!', '!?', '+++', '+_+', '...', '...?', '._.',
-    '0_0', '1970s_(style)', '1980s_(style)', '1990s_(style)', '1boy', '1girl', '1koma', '1other',
-    '2000s_(style)', '2005', '2006', '2007', '2008', '2009', '2010', '2011',
-    '2012', '2013', '2014', '2015', '2016', '2017', '2018', '2019',
-    '2020', '2021', '2022', '2023', '2024', '2b_(nier:automata)_(cosplay)', '2boys', '2girls',
-    '2koma', '2others', '39', '3:', '3boys', '3d', '3d_background', '3girls',
-    '3koma', '3others', '4-finger_heart_hands', '404_(girls\'_frontline)', '4boys', '4girls', '4koma', '4others',
-    '5boys', '5girls', '5koma', '5others', '6+boys', '6+girls', '6+others', '69',
-    ':/', ':3', ':<', ':>', ':>=', ':c', ':d', ':i',
-    ':o', ':p', ':q', ':s', ':t', ':x', ':|', ';(',
-    ';)', ';3', ';<', ';d', ';o', ';p', ';q', '<o>_<o>',
-    '<|>_<|>', '=_=', '>:(', '>:)', '>_<', '>_o', '>o<', '?',
-    '??', '@_@', '\\m/', '\\n/', '\\o/', '\\||/', '^^^', '^_^',
-    'a_(phrase)', 'a_certain_high_school_uniform', 'abandoned', 'above_clouds', 'abs', 'absolutely_everyone', 'abstract', 'abstract_background',
-    'absurdly_long_hair', 'aburaage', 'abuse', 'abyssal_ship', 'accident', 'accidental_exposure', 'accidental_pervert', 'ace_(playing_card)',
-    'ace_of_hearts', 'ace_of_spades', 'achiga_school_uniform', 'acorn', 'acoustic_guitar', 'ad', 'adam\'s_apple', 'adapted_costume',
-    'adapted_turret', 'adapted_uniform', 'adidas', 'adjusting_another\'s_clothes', 'adjusting_buruma', 'adjusting_clothes', 'adjusting_eyewear', 'adjusting_footwear',
-    'adjusting_gloves', 'adjusting_hair', 'adjusting_headwear', 'adjusting_legwear', 'adjusting_leotard', 'adjusting_necktie', 'adjusting_panties', 'adjusting_scarf',
-    'adjusting_swimsuit', 'advanced_nurturing_high_school_uniform', 'aegis_sword_(xenoblade)', 'aegyo_sal', 'aerial_fireworks', 'aestus_estus', 'affectionate', 'afloat',
-    'afro', 'after_anal', 'after_bathing', 'after_battle', 'after_ejaculation', 'after_fellatio', 'after_kiss', 'after_masturbation',
-    'after_paizuri', 'after_rape', 'after_sex', 'after_vaginal', 'afterglow', 'afterimage', 'afterword', 'against_fence',
-    'against_fourth_wall', 'against_glass', 'against_railing', 'against_tree', 'against_wall', 'against_window', 'age_comparison', 'age_difference',
-    'age_progression', 'age_regression', 'aged_down', 'aged_up', 'ahegao', 'ahoge', 'ahoge_wag', 'ai_ai_gasa',
-    'aiguillette', 'aiming', 'aiming_at_viewer', 'ainu', 'ainu_clothes', 'air_bubble', 'air_conditioner', 'aircraft',
-    'aircraft_carrier', 'airplane', 'airship', 'ajirogasa', 'ak-47', 'akanbe', 'akatsuki_uniform', 'akemi_homura_(cosplay)',
-    'akeome', 'alarm_clock', 'albino', 'album_cover', 'alcohol', 'alcohol_carton', 'alice_(alice_in_wonderland)_(cosplay)', 'alien',
-    'all_fours', 'alley', 'alpaca_ears', 'alpha_signature', 'alphes_(style)', 'alternate_body_size', 'alternate_breast_size', 'alternate_color',
-    'alternate_costume', 'alternate_eye_color', 'alternate_facial_hair', 'alternate_form', 'alternate_hair_color', 'alternate_hair_length', 'alternate_hair_ornament', 'alternate_hairstyle',
-    'alternate_headwear', 'alternate_height', 'alternate_legwear', 'alternate_muscle_size', 'alternate_pectoral_size', 'alternate_shiny_pokemon', 'alternate_skin_color', 'alternate_species',
-    'alternate_universe', 'alternate_weapon', 'alternate_wings', 'amazon_position', 'ambiguous_gender', 'ambiguous_red_liquid', 'ambrosia_(dungeon_meshi)', 'american_flag',
-    'american_flag_bikini', 'american_flag_dress', 'american_flag_legwear', 'american_flag_print', 'american_flag_shirt', 'amestris_military_uniform', 'amesuku_gyaru', 'ammunition',
-    'ammunition_belt', 'ammunition_box', 'ammunition_pouch', 'amplifier', 'amputee', 'amulet', 'amusement_park', 'anal',
-    'anal_beads', 'anal_fingering', 'anal_fluid', 'anal_hair', 'anal_object_insertion', 'anal_only', 'anal_tail', 'analog_clock',
-    'analogous_colors', 'anchor', 'anchor_choker', 'anchor_earrings', 'anchor_hair_ornament', 'anchor_necklace', 'anchor_ornament', 'anchor_print',
-    'anchor_symbol', 'ancient_egyptian', 'ancient_egyptian_clothes', 'ancient_greek_clothes', 'androgyne_symbol', 'androgynous', 'android', 'anemone_(flower)',
-    'angel', 'angel\'s_24_uniform_(blue_archive)', 'angel_and_devil', 'angel_wings', 'angelfish', 'anger_vein', 'anglerfish', 'angora_rabbit',
-    'angry', 'anilingus', 'animal', 'animal-themed_food', 'animal_around_neck', 'animal_bag', 'animal_collar', 'animal_costume',
-    'animal_ear_fluff', 'animal_ear_hairband', 'animal_ear_headphones', 'animal_ear_headwear', 'animal_ear_hood', 'animal_ear_legwear', 'animal_ear_piercing', 'animal_ears',
-    'animal_feet', 'animal_focus', 'animal_hair_ornament', 'animal_hands', 'animal_hat', 'animal_head', 'animal_helmet', 'animal_hood',
-    'animal_hug', 'animal_nose', 'animal_on_arm', 'animal_on_hand', 'animal_on_head', 'animal_on_lap', 'animal_on_shoulder', 'animal_penis',
-    'animal_print', 'animal_sexualization', 'animal_skull', 'animal_slippers', 'animalization', 'anime_coloring', 'animification', 'ankh',
-    'ankle_boots', 'ankle_bow', 'ankle_cuffs', 'ankle_garter', 'ankle_grab', 'ankle_lace-up', 'ankle_ribbon', 'ankle_socks',
-    'ankle_strap', 'ankle_wrap', 'ankleband', 'anklet', 'anna_miller', 'anniversary', 'announcement_celebration', 'annoyed',
-    'ant', 'antenna_hair', 'antennae', 'anti-aircraft_gun', 'anti-materiel_rifle', 'antique_firearm', 'antique_phone', 'antlers',
-    'anus', 'anus_peek', 'anya\'s_heh_face_(meme)', 'anzio_military_uniform', 'anzio_school_uniform', 'ao_dai', 'apartment', 'apologizing',
-    'apple', 'apple_slice', 'applying_makeup', 'april_fools', 'apron', 'apron_lift', 'aqua_background', 'aqua_bikini',
-    'aqua_bow', 'aqua_bowtie', 'aqua_bra', 'aqua_dress', 'aqua_eyes', 'aqua_flower', 'aqua_footwear', 'aqua_gemstone',
-    'aqua_gloves', 'aqua_hair', 'aqua_hairband', 'aqua_halo', 'aqua_hat', 'aqua_jacket', 'aqua_kimono', 'aqua_leotard',
-    'aqua_lips', 'aqua_nails', 'aqua_neckerchief', 'aqua_necktie', 'aqua_panties', 'aqua_pants', 'aqua_pantyhose', 'aqua_pupils',
-    'aqua_ribbon', 'aqua_sailor_collar', 'aqua_scarf', 'aqua_scrunchie', 'aqua_shirt', 'aqua_shorts', 'aqua_skin', 'aqua_skirt',
-    'aqua_sleeves', 'aqua_theme', 'aqua_thighhighs', 'aqua_trim', 'aqua_vest', 'aquarium', 'aquiline_nose', 'ar-15',
-    'arabian_clothes', 'arachne', 'araki_hirohiko_(style)', 'aran_sweater', 'arcade', 'arcade_cabinet', 'arch', 'arched_back',
-    'arched_bangs', 'arched_crown', 'archery', 'architecture', 'archon_mark', 'areola_slip', 'arguing', 'argyle_background',
-    'argyle_clothes', 'argyle_cutout', 'argyle_pantyhose', 'argyle_sweater', 'argyle_thighhighs', 'aria_company_uniform', 'aristocratic_clothes', 'arm_above_head',
-    'arm_across_waist', 'arm_armor', 'arm_around_back', 'arm_around_neck', 'arm_around_shoulder', 'arm_around_waist', 'arm_at_side', 'arm_behind_back',
-    'arm_behind_head', 'arm_belt', 'arm_between_breasts', 'arm_between_legs', 'arm_blade', 'arm_cannon', 'arm_cuffs', 'arm_cutout',
-    'arm_garter', 'arm_guards', 'arm_hair', 'arm_held_back', 'arm_hug', 'arm_on_another\'s_shoulder', 'arm_on_knee', 'arm_on_own_head',
-    'arm_on_table', 'arm_out_of_sleeve', 'arm_over_head', 'arm_pillow', 'arm_pouch', 'arm_rest', 'arm_ribbon', 'arm_shield',
-    'arm_sling', 'arm_strap', 'arm_support', 'arm_tattoo', 'arm_under_breasts', 'arm_up', 'arm_warmers', 'arm_wrap',
-    'armband', 'armbinder', 'armchair', 'armlet', 'armor', 'armored_bodysuit', 'armored_boots', 'armored_dress',
-    'armored_gloves', 'armored_leotard', 'armored_skirt', 'armpit_crease', 'armpit_cutout', 'armpit_focus', 'armpit_hair', 'armpit_hair_peek',
-    'armpit_peek', 'armpit_sex', 'armpits', 'arms_around_back', 'arms_around_neck', 'arms_around_waist', 'arms_at_sides', 'arms_behind_back',
-    'arms_behind_head', 'arms_between_legs', 'arms_on_knees', 'arms_on_table', 'arms_under_breasts', 'arms_up', 'army', 'aroused',
-    'aroused_nosebleed', 'arrancar', 'arrow_(projectile)', 'arrow_(symbol)', 'arrow_in_body', 'arrow_through_heart', 'art_brush', 'art_nouveau',
-    'art_program_in_frame', 'art_shift', 'art_tools_in_frame', 'arthropod_boy', 'arthropod_girl', 'arthropod_limbs', 'artificial_eye', 'artificial_vagina',
-    'artillery', 'artist_logo', 'artist_name', 'artist_self-insert', 'artistic_error', 'asa_no_ha_(pattern)', 'asahi_breweries', 'ascot',
-    'ascot_between_breasts', 'ashford_academy_school_uniform', 'ashtray', 'asian', 'asphyxiation', 'ass', 'ass-to-ass', 'ass_cutout',
-    'ass_focus', 'ass_hair', 'ass_press', 'ass_ripple', 'ass_shake', 'ass_support', 'ass_tattoo', 'ass_visible_through_thighs',
-    'assault_rifle', 'assault_visor', 'assertive_female', 'assisted_exposure', 'assisted_rape', 'asticassia_school_uniform', 'astronaut', 'asymmetrical_armor',
-    'asymmetrical_arms', 'asymmetrical_bangs', 'asymmetrical_clothes', 'asymmetrical_docking', 'asymmetrical_dual_wielding', 'asymmetrical_footwear', 'asymmetrical_gloves', 'asymmetrical_hair',
-    'asymmetrical_horns', 'asymmetrical_legwear', 'asymmetrical_pants', 'asymmetrical_sidelocks', 'asymmetrical_sleeves', 'asymmetrical_wings', 'at_computer', 'at_gunpoint',
-    'athletic_leotard', 'attack', 'au_ra', 'audience', 'audio_jack', 'aunt_and_niece', 'aura', 'aurora',
-    'autobot', 'autofacial', 'autumn', 'autumn_leaves', 'averting_eyes', 'aviator_cap', 'aviator_sunglasses', 'awning',
-    'axe', 'aztec', 'azumanga_daioh\'s_school_uniform', 'baby', 'baby_bottle', 'babydoll', 'back', 'back-print_panties',
-    'back-seamed_legwear', 'back-to-back', 'back_bow', 'back_cutout', 'back_focus', 'back_tattoo', 'backboob', 'backless_dress',
-    'backless_leotard', 'backless_outfit', 'backless_panties', 'backless_swimsuit', 'backlighting', 'backpack', 'backwards_hat', 'bacon',
-    'bad_anatomy', 'bad_arm', 'bad_end', 'bad_feet', 'bad_food', 'bad_hands', 'bad_leg', 'bad_perspective',
-    'bad_proportions', 'badge', 'bag', 'bag_charm', 'bag_of_chips', 'bag_over_head', 'bagged_fish', 'baggy_clothes',
-    'baggy_pants', 'bags_under_eyes', 'baguette', 'bakery', 'baking', 'balaclava', 'balance_scale', 'balancing',
-    'balcony', 'bald', 'bald_eagle', 'balding', 'ball', 'ball_and_chain_(weapon)', 'ball_and_chain_restraint', 'ball_gag',
-    'ballerina', 'ballet', 'ballet_slippers', 'ballistic_shield', 'balloon', 'bamboo', 'bamboo_broom', 'bamboo_forest',
-    'bamboo_shoot', 'bamboo_steamer', 'banana', 'banana_peel', 'banchou', 'band_(music)', 'band_uniform', 'bandage_on_face',
-    'bandage_over_one_eye', 'bandaged_arm', 'bandaged_chest', 'bandaged_fingers', 'bandaged_foot', 'bandaged_hand', 'bandaged_head', 'bandaged_leg',
-    'bandaged_neck', 'bandaged_wrist', 'bandages', 'bandages_over_clothes', 'bandaid', 'bandaid_hair_ornament', 'bandaid_on_arm', 'bandaid_on_cheek',
-    'bandaid_on_face', 'bandaid_on_forehead', 'bandaid_on_hand', 'bandaid_on_head', 'bandaid_on_knee', 'bandaid_on_leg', 'bandaid_on_neck', 'bandaid_on_nose',
-    'bandaid_on_pussy', 'bandaid_on_shoulder', 'bandaid_on_thigh', 'bandaids_on_nipples', 'bandana', 'bandana_around_neck', 'bandeau', 'bandolier',
-    'bangboo_(zenless_zone_zero)', 'bangle', 'bangs_pinned_back', 'banknote', 'banner', 'baozi', 'bar_(place)', 'bar_censor',
-    'bar_stool', 'bara', 'barbed_wire', 'barbell', 'barbell_piercing', 'barcode', 'barcode_scanner', 'barcode_tattoo',
-    'barding', 'bare_arms', 'bare_back', 'bare_hips', 'bare_legs', 'bare_pectorals', 'bare_shoulders', 'bare_tree',
-    'barefoot', 'barefoot_sandals_(jewelry)', 'barrel', 'bars', 'bartender', 'baseball', 'baseball_(object)', 'baseball_bat',
-    'baseball_cap', 'baseball_helmet', 'baseball_jersey', 'baseball_mitt', 'baseball_stadium', 'baseball_uniform', 'basket', 'basketball',
-    'basketball_(object)', 'basketball_hoop', 'basketball_jersey', 'basketball_uniform', 'bass_clef', 'bass_guitar', 'bat_(animal)', 'bat_ears',
-    'bat_girl', 'bat_hair_ornament', 'bat_ornament', 'bat_print', 'bat_wings', 'bath', 'bath_stool', 'bath_yukata',
-    'bathhouse', 'bathing', 'bathrobe', 'bathroom', 'bathtub', 'baton_(weapon)', 'battery', 'battery_indicator',
-    'battle', 'battle_axe', 'battle_damage', 'battle_rifle', 'battlefield', 'battleship', 'bayonet', 'bc_freedom_(emblem)',
-    'bc_freedom_military_uniform', 'bc_freedom_school_uniform', 'bdsm', 'beach', 'beach_chair', 'beach_mat', 'beach_towel', 'beach_umbrella',
-    'beach_volleyball', 'beachball', 'bead_bracelet', 'bead_choker', 'bead_necklace', 'beads', 'beak', 'beaker',
-    'beam_cannon', 'beam_rifle', 'beamed_eighth_notes', 'beamed_sixteenth_notes', 'bean_bag_chair', 'beanie', 'beans', 'bear',
-    'bear_boy', 'bear_costume', 'bear_ears', 'bear_girl', 'bear_hair_ornament', 'bear_hood', 'bear_panties', 'bear_print',
-    'bear_tail', 'beard', 'beard_stubble', 'beckoning', 'bed', 'bed_frame', 'bed_sheet', 'bedroom',
-    'bee', 'bee_girl', 'beehive_hairdo', 'beer', 'beer_bottle', 'beer_can', 'beer_mug', 'beetle',
-    'before_and_after', 'behind-the-head_headphones', 'behind_another', 'bell', 'bell-bottoms', 'bell_pepper', 'bellflower', 'belly',
-    'belly_chain', 'belly_grab', 'belt', 'belt_boots', 'belt_bra', 'belt_buckle', 'belt_chain', 'belt_collar',
-    'belt_pouch', 'belt_skirt', 'bench', 'bendy_straw', 'bent_over', 'bent_over_furniture', 'bento', 'beret',
-    'beretta_1301', 'beretta_92', 'berry', 'berry_(pokemon)', 'bespectacled', 'bestiality', 'between_breasts', 'between_fingers',
-    'between_legs', 'between_pectorals', 'between_thighs', 'between_toes', 'bib', 'biceps', 'bicorne', 'bicycle',
-    'bicycle_basket', 'bident', 'big_belly', 'big_hair', 'big_head', 'big_nose', 'bike_jersey', 'bike_shorts',
-    'bike_shorts_under_shorts', 'bike_shorts_under_skirt', 'biker_clothes', 'bikesuit', 'bikini', 'bikini_armor', 'bikini_around_one_leg', 'bikini_bottom_aside',
-    'bikini_bottom_only', 'bikini_bottom_pull', 'bikini_day', 'bikini_pull', 'bikini_shorts', 'bikini_skirt', 'bikini_tan', 'bikini_top_lift',
-    'bikini_top_only', 'bikini_top_pull', 'bikini_tug', 'bikini_under_clothes', 'bikini_under_shorts', 'bilingual', 'billboard', 'billiard_ball',
-    'binary', 'bindi', 'binoculars', 'biplane', 'bipod', 'bird', 'bird_boy', 'bird_ears',
-    'bird_girl', 'bird_hair_ornament', 'bird_legs', 'bird_mask', 'bird_on_arm', 'bird_on_hand', 'bird_on_head', 'bird_on_shoulder',
-    'bird_print', 'bird_tail', 'bird_wings', 'birdcage', 'birthday', 'birthday_cake', 'birthmark', 'bisexual_female',
-    'bisexual_male', 'bishamonten\'s_pagoda', 'bishamonten\'s_spear', 'bishie_sparkle', 'bishop_(chess)', 'bishounen', 'bit_gag', 'bite_mark',
-    'bite_mark_on_neck', 'biting', 'biting_ear', 'biting_glove', 'biting_neck', 'biting_own_finger', 'biting_own_lip', 'biwa_lute',
-    'bkub_(style)', 'black-framed_eyewear', 'black_apron', 'black_arm_warmers', 'black_armband', 'black_armor', 'black_ascot', 'black_babydoll',
-    'black_background', 'black_bag', 'black_bandana', 'black_bandeau', 'black_belt', 'black_bikini', 'black_bikini_bottom', 'black_bird',
-    'black_blindfold', 'black_bodysuit', 'black_border', 'black_bow', 'black_bowtie', 'black_bra', 'black_bridal_gauntlets', 'black_buruma',
-    'black_bustier', 'black_butterfly', 'black_camisole', 'black_cape', 'black_capelet', 'black_cardigan', 'black_cat', 'black_choker',
-    'black_cloak', 'black_coat', 'black_coat_(kingdom_hearts)', 'black_collar', 'black_corset', 'black_dress', 'black_eyeliner', 'black_eyes',
-    'black_eyeshadow', 'black_feathers', 'black_flower', 'black_footwear', 'black_fur', 'black_garter_belt', 'black_garter_straps', 'black_gloves',
-    'black_hair', 'black_hairband', 'black_hakama', 'black_halo', 'black_hands', 'black_hat', 'black_headband', 'black_headphones',
-    'black_helmet', 'black_hole', 'black_hood', 'black_hoodie', 'black_horns', 'black_jacket', 'black_jumpsuit', 'black_keys_(type-moon)',
-    'black_kimono', 'black_leg_warmers', 'black_leggings', 'black_leotard', 'black_lips', 'black_male_swimwear', 'black_male_underwear', 'black_mask',
-    'black_nails', 'black_neckerchief', 'black_necktie', 'black_nightgown', 'black_one-piece_swimsuit', 'black_outline', 'black_overalls', 'black_panties',
-    'black_pants', 'black_pantyhose', 'black_pasties', 'black_pouch', 'black_pubic_hair', 'black_ribbon', 'black_robe', 'black_rose',
-    'black_sailor_collar', 'black_sarong', 'black_sash', 'black_scales', 'black_scarf', 'black_sclera', 'black_scrunchie', 'black_serafuku',
-    'black_shirt', 'black_shorts', 'black_shrug', 'black_skin', 'black_skirt', 'black_sky', 'black_sleeve_cuffs', 'black_sleeves',
-    'black_slingshot_swimsuit', 'black_socks', 'black_sports_bra', 'black_straps', 'black_suit', 'black_sweater', 'black_sweater_vest', 'black_tail',
-    'black_tank_top', 'black_theme', 'black_thighhighs', 'black_tiara', 'black_trim', 'black_tube_top', 'black_umbrella', 'black_undershirt',
-    'black_veil', 'black_vest', 'black_vs_white', 'black_wings', 'black_wrist_cuffs', 'blake_bloom_(wuthering_waves)', 'blank_censor', 'blank_eyes',
-    'blank_speech_bubble', 'blank_stare', 'blanket', 'blazer', 'bleeding', 'bleeding_from_forehead', 'blending', 'blind',
-    'blindfold', 'blinking', 'blob', 'blocking', 'blonde_hair', 'blonde_pubic_hair', 'blood', 'blood_bag',
-    'blood_drip', 'blood_from_eyes', 'blood_from_mouth', 'blood_in_hair', 'blood_in_mouth', 'blood_on_arm', 'blood_on_bandages', 'blood_on_breasts',
-    'blood_on_chest', 'blood_on_clothes', 'blood_on_face', 'blood_on_ground', 'blood_on_hands', 'blood_on_knife', 'blood_on_leg', 'blood_on_wall',
-    'blood_on_weapon', 'blood_splatter', 'blood_spray', 'blood_stain', 'bloodshot_eyes', 'bloom', 'bloomers', 'bloomers_pull',
-    'blouse', 'blowhole', 'blowing', 'blowing_bubbles', 'blowing_kiss', 'blowing_smoke', 'blue-framed_eyewear', 'blue-tinted_eyewear',
-    'blue_apron', 'blue_armband', 'blue_armor', 'blue_ascot', 'blue_background', 'blue_bag', 'blue_bandana', 'blue_belt',
-    'blue_bikini', 'blue_bird', 'blue_blood', 'blue_bodysuit', 'blue_border', 'blue_bow', 'blue_bowtie', 'blue_bra',
-    'blue_brooch', 'blue_buruma', 'blue_butterfly', 'blue_camisole', 'blue_cape', 'blue_capelet', 'blue_cardigan', 'blue_choker',
-    'blue_cloak', 'blue_coat', 'blue_collar', 'blue_corset', 'blue_dress', 'blue_eyeliner', 'blue_eyes', 'blue_eyeshadow',
-    'blue_feathers', 'blue_fire', 'blue_flower', 'blue_footwear', 'blue_fur', 'blue_gemstone', 'blue_gloves', 'blue_hair',
-    'blue_hairband', 'blue_hakama', 'blue_halo', 'blue_hat', 'blue_headband', 'blue_helmet', 'blue_hood', 'blue_hoodie',
-    'blue_horns', 'blue_innertube', 'blue_jacket', 'blue_jumpsuit', 'blue_kimono', 'blue_leotard', 'blue_lips', 'blue_male_swimwear',
-    'blue_male_underwear', 'blue_mittens', 'blue_nails', 'blue_neckerchief', 'blue_necktie', 'blue_nipples', 'blue_one-piece_swimsuit', 'blue_oni',
-    'blue_outline', 'blue_overalls', 'blue_pajamas', 'blue_panties', 'blue_pants', 'blue_pantyhose', 'blue_petals', 'blue_pubic_hair',
-    'blue_pupils', 'blue_ribbon', 'blue_robe', 'blue_rose', 'blue_sailor_collar', 'blue_sarong', 'blue_sash', 'blue_scales',
-    'blue_scarf', 'blue_sclera', 'blue_scrunchie', 'blue_serafuku', 'blue_shawl', 'blue_shirt', 'blue_shorts', 'blue_skin',
-    'blue_skirt', 'blue_sky', 'blue_sleeves', 'blue_socks', 'blue_sports_bra', 'blue_suit', 'blue_sweater', 'blue_sweater_vest',
-    'blue_tabard', 'blue_tail', 'blue_tank_top', 'blue_theme', 'blue_thighhighs', 'blue_tongue', 'blue_trim', 'blue_tunic',
-    'blue_umbrella', 'blue_veil', 'blue_vest', 'blue_visor', 'blue_wings', 'blue_wrist_cuffs', 'blueberry', 'blueberry_academy_school_uniform',
-    'blunt_bangs', 'blunt_ends', 'blunt_tresses', 'blur_censor', 'blurry', 'blurry_background', 'blurry_foreground', 'blush',
-    'blush_stickers', 'bnw_(umamusume)', 'bo_staff', 'boar', 'board_eraser', 'board_game', 'boat', 'boater_hat',
-    'bob_cut', 'bobby_socks', 'bodice', 'body_armor', 'body_blush', 'body_freckles', 'body_fur', 'body_hair',
-    'body_horror', 'body_markings', 'body_pillow', 'body_switch', 'body_writing', 'bodypaint', 'bodystocking', 'bodysuit',
-    'bodysuit_under_clothes', 'bokeh', 'bokken', 'bokura_wa_ima_no_naka_de', 'bolo_tie', 'bolt_(hardware)', 'bolt_action', 'bomb',
-    'bomber_jacket', 'bondage', 'bondage_outfit', 'bone', 'bone_hair_ornament', 'bone_necklace', 'bone_print', 'boned_meat',
-    'bonnet', 'bonsai', 'boobplate', 'book', 'book_on_lap', 'book_stack', 'bookmark', 'bookshelf',
-    'boom_barrier', 'boombox', 'boomerang', 'booth_seating', 'boots', 'border', 'borderless_panels', 'bored',
-    'borrowed_character', 'borrowed_clothes', 'borrowed_design', 'bottle', 'bottomless', 'boulder', 'bouncing', 'bouncing_ass',
-    'bouncing_breasts', 'bouncing_penis', 'bound', 'bound_ankles', 'bound_arms', 'bound_legs', 'bound_thighs', 'bound_together',
-    'bound_torso', 'bound_wrists', 'bouquet', 'boutonniere', 'bow', 'bow-shaped_hair', 'bow_(music)', 'bow_(weapon)',
-    'bow_bikini', 'bow_bra', 'bow_choker', 'bow_earrings', 'bow_hairband', 'bow_legwear', 'bow_panties', 'bow_skirt',
-    'bowing', 'bowl', 'bowl_cut', 'bowl_hat', 'bowlegged_pose', 'bowler_hat', 'bowtie', 'box',
-    'box_art', 'box_of_chocolates', 'box_tie', 'boxcutter', 'boxer_briefs', 'boxers', 'boxing', 'boxing_gloves',
-    'boxing_ring', 'boy_on_top', 'boy_sandwich', 'boyshort_panties', 'bra', 'bra_lift', 'bra_peek', 'bra_pull',
-    'bra_strap', 'bra_visible_through_clothes', 'bracelet', 'bracer', 'braces', 'braid', 'braided_bangs', 'braided_bun',
-    'braided_hair_rings', 'braided_ponytail', 'braided_sidelock', 'braiding_hair', 'brain', 'bralines', 'branch', 'brand_name_imitation',
-    'brand_of_the_exalt', 'brass_knuckles', 'brazilian_flag', 'brazilian_flag_print', 'bread', 'bread_slice', 'breaker_gorgon', 'breaking',
-    'breast_bondage', 'breast_conscious', 'breast_curtain', 'breast_curtains', 'breast_cutout', 'breast_envy', 'breast_expansion', 'breast_focus',
-    'breast_lift', 'breast_milk', 'breast_padding', 'breast_pillow', 'breast_pocket', 'breast_poke', 'breast_press', 'breast_rest',
-    'breast_slip', 'breast_smother', 'breast_strap', 'breast_sucking', 'breast_suppress', 'breast_tattoo', 'breast_zipper', 'breastfeeding',
-    'breastless_clothes', 'breastplate', 'breasts', 'breasts_apart', 'breasts_day', 'breasts_on_glass', 'breasts_on_head', 'breasts_on_table',
-    'breasts_out', 'breasts_squeezed_together', 'breath', 'breath_weapon', 'breathing_fire', 'brick', 'brick_floor', 'brick_wall',
-    'bridal_garter', 'bridal_gauntlets', 'bridal_legwear', 'bridal_lingerie', 'bridal_veil', 'bride', 'bridge', 'bridle',
-    'briefcase', 'briefs', 'bright_pupils', 'broad_shoulders', 'broccoli', 'broken', 'broken_armor', 'broken_chain',
-    'broken_eyewear', 'broken_glass', 'broken_halo', 'broken_heart', 'broken_horn', 'broken_mask', 'broken_mirror', 'broken_sword',
-    'broken_wall', 'broken_weapon', 'broken_window', 'brooch', 'broom', 'broom_riding', 'brother_and_sister', 'brothers',
-    'brown-framed_eyewear', 'brown-tinted_eyewear', 'brown_apron', 'brown_ascot', 'brown_background', 'brown_bag', 'brown_belt', 'brown_bikini',
-    'brown_bodysuit', 'brown_border', 'brown_bow', 'brown_bowtie', 'brown_bra', 'brown_cape', 'brown_capelet', 'brown_cardigan',
-    'brown_cat', 'brown_choker', 'brown_cloak', 'brown_coat', 'brown_collar', 'brown_corset', 'brown_dress', 'brown_eyes',
-    'brown_feathers', 'brown_flower', 'brown_footwear', 'brown_fur', 'brown_gloves', 'brown_hair', 'brown_hairband', 'brown_hakama',
-    'brown_hat', 'brown_hoodie', 'brown_horns', 'brown_jacket', 'brown_kimono', 'brown_leotard', 'brown_lips', 'brown_mittens',
-    'brown_nails', 'brown_neckerchief', 'brown_necktie', 'brown_panties', 'brown_pants', 'brown_pantyhose', 'brown_pubic_hair', 'brown_ribbon',
-    'brown_robe', 'brown_sailor_collar', 'brown_sash', 'brown_scarf', 'brown_serafuku', 'brown_shawl', 'brown_shirt', 'brown_shorts',
-    'brown_skirt', 'brown_sleeves', 'brown_socks', 'brown_suit', 'brown_sweater', 'brown_sweater_vest', 'brown_tail', 'brown_theme',
-    'brown_thighhighs', 'brown_vest', 'brown_wings', 'bruce_lee\'s_jumpsuit', 'bruise', 'bruise_on_face', 'bruised_eye', 'brushing_another\'s_hair',
-    'brushing_hair', 'brushing_own_hair', 'brushing_teeth', 'bubble', 'bubble_background', 'bubble_bath', 'bubble_skirt', 'bubble_tea',
-    'bubble_tea_challenge', 'buck_teeth', 'bucket', 'bucket_hat', 'buckle', 'bud', 'budget_sarashi', 'bug',
-    'building', 'bukkake', 'bulge', 'bulge_to_ass', 'bulging_eyes', 'bull', 'bullet', 'bullet_hole',
-    'bulletin_board', 'bulletproof_vest', 'bullpup', 'bullying', 'bun_cover', 'bun_with_braided_base', 'bunching_hair', 'bunny_day',
-    'burger', 'buried', 'burn_scar', 'burning', 'burnt', 'burnt_clothes', 'bursting_ass', 'bursting_breasts',
-    'bursting_pectorals', 'buruma', 'buruma_aside', 'buruma_pull', 'bus', 'bus_interior', 'bus_stop', 'bush',
-    'business_suit', 'bust_cup', 'buster_sword', 'bustier', 'butler', 'butt_crack', 'butt_plug', 'butter',
-    'butterfly', 'butterfly-shaped_pupils', 'butterfly_brooch', 'butterfly_earrings', 'butterfly_hair_ornament', 'butterfly_net', 'butterfly_on_hand', 'butterfly_ornament',
-    'butterfly_print', 'butterfly_sitting', 'butterfly_tattoo', 'butterfly_wings', 'butterflyfish', 'buttjob', 'buttjob_over_clothes', 'button_badge',
-    'button_eyes', 'button_gap', 'buttoned_cuffs', 'buttons', 'buzz_cut', 'byakugan', 'c-string', 'c:',
-    'cabbage', 'cabbie_hat', 'cabinet', 'cable', 'cable_knit', 'cable_tail', 'cactus', 'cafe',
-    'cage', 'cake', 'cake_slice', 'calendar_(medium)', 'calendar_(object)', 'caliburn_(fate)', 'calico', 'calligraphy',
-    'calligraphy_brush', 'camcorder', 'camellia', 'cameltoe', 'cameo', 'camera', 'camera_around_neck', 'camisole',
-    'camisole_lift', 'camouflage', 'camouflage_bikini', 'camouflage_headwear', 'camouflage_jacket', 'camouflage_pants', 'camouflage_shirt', 'campfire',
-    'camping', 'can', 'can\'t_be_this_cute', 'canal', 'candelabra', 'candle', 'candlelight', 'candlestand',
-    'candy', 'candy_apple', 'candy_cane', 'candy_hair_ornament', 'candy_wrapper', 'cane', 'canister', 'canned_coffee',
-    'cannon', 'canopy_(aircraft)', 'canopy_bed', 'canteen', 'canvas_(object)', 'cape', 'capelet', 'capri_pants',
-    'captive_bead_ring', 'captured', 'car', 'car_interior', 'caramelldansen', 'carapace', 'card', 'card_(medium)',
-    'card_parody', 'cardboard_box', 'cardigan', 'cardigan_around_waist', 'cardigan_vest', 'cardiogram', 'caressing_testicles', 'cargo_pants',
-    'carnation', 'carousel', 'carpet', 'carried_breast_rest', 'carrot', 'carrot_hair_ornament', 'carrot_necklace', 'carrot_print',
-    'carrying', 'carrying_over_shoulder', 'carrying_overhead', 'carrying_person', 'carrying_under_arm', 'cart', 'carton', 'cartoon_bone',
-    'cartoonized', 'cartridge', 'cash_register', 'casing_ejection', 'casino', 'cassock', 'cast', 'casting_spell',
-    'castle', 'casual', 'casual_one-piece_swimsuit', 'cat', 'cat\'s_cradle', 'cat_bag', 'cat_boy', 'cat_choker',
-    'cat_costume', 'cat_cutout', 'cat_day', 'cat_ear_hairband', 'cat_ear_headphones', 'cat_ear_legwear', 'cat_ear_panties', 'cat_ears',
-    'cat_girl', 'cat_hair_ornament', 'cat_hat', 'cat_hood', 'cat_lingerie', 'cat_mask', 'cat_on_head', 'cat_on_lap',
-    'cat_on_shoulder', 'cat_paws', 'cat_print', 'cat_tail', 'cat_teaser', 'catching', 'catchphrase', 'caterpillar_tracks',
-    'catsuit', 'cattail', 'caught', 'cauldron', 'caustics', 'caution_tape', 'cave', 'cave_interior',
-    'cbt', 'cd', 'cd_case', 'ceiling', 'ceiling_light', 'cello', 'cellphone', 'cellphone_charm',
-    'cellphone_photo', 'censored', 'censored_by_text', 'censored_identity', 'censored_nipples', 'censored_text', 'centaur', 'centauroid',
-    'center-flap_bangs', 'center_frills', 'center_opening', 'centipede', 'cephalopod_eyes', 'cerise_bouquet', 'cervical_penetration', 'cervix',
-    'cetacean_tail', 'chain', 'chain-link_fence', 'chain_headband', 'chain_leash', 'chain_necklace', 'chained', 'chained_wrists',
-    'chainmail', 'chainsaw', 'chair', 'chakram', 'chaldea_logo', 'chaldea_uniform', 'chalice', 'chalk',
-    'chalkboard', 'champagne', 'champagne_bottle', 'champagne_flute', 'champion\'s_tunic_(zelda)', 'champion_uniform', 'chandelier', 'changing_room',
-    'changpao', 'chaps', 'character-themed_food', 'character_age', 'character_censor', 'character_charm', 'character_doll', 'character_hair_ornament',
-    'character_hood', 'character_mask', 'character_name', 'character_print', 'character_profile', 'character_signature', 'charisma_break', 'charm_(object)',
-    'chart', 'chasing', 'chastity_cage', 'chat_log', 'cheating_(relationship)', 'checkerboard_cookie', 'checkered_background', 'checkered_bow',
-    'checkered_clothes', 'checkered_dress', 'checkered_flag', 'checkered_floor', 'checkered_hairband', 'checkered_kimono', 'checkered_legwear', 'checkered_necktie',
-    'checkered_sash', 'checkered_scarf', 'checkered_shirt', 'checkered_skirt', 'cheek-to-cheek', 'cheek_bulge', 'cheek_pinching', 'cheek_poking',
-    'cheek_press', 'cheek_pull', 'cheek_rest', 'cheek_squash', 'cheekbones', 'cheering', 'cheerleader', 'cheese',
-    'cheese_trail', 'cheesecake', 'chef', 'chef_hat', 'chemical_structure', 'chemise', 'cherry', 'cherry_blossom_print',
-    'cherry_blossoms', 'cherry_hair_ornament', 'cherry_print', 'cherry_tomato', 'chess', 'chess_piece', 'chessboard', 'chest_belt',
-    'chest_guard', 'chest_hair', 'chest_harness', 'chest_jewel', 'chest_of_drawers', 'chest_sarashi', 'chest_strap', 'chest_tattoo',
-    'chest_tuft', 'chestnut_mouth', 'chewing', 'chewing_gum', 'chi-hatan_military_uniform', 'chibi', 'chibi_inset', 'chibi_on_head',
-    'chibi_only', 'chick', 'chicken', 'chicken_(food)', 'chicken_leg', 'chihaya_(clothing)', 'chikan', 'child',
-    'child\'s_drawing', 'child_carry', 'chili_pepper', 'chimera', 'chimney', 'chin_strap', 'china_dress', 'chinese_clothes',
-    'chinese_hairpin', 'chinese_knot', 'chinese_new_year', 'chinese_text', 'chinese_zodiac', 'chipmunk_ears', 'chipmunk_girl', 'chipmunk_tail',
-    'chips_(food)', 'chisel', 'chiton', 'chocobo', 'chocolate', 'chocolate_banana', 'chocolate_bar', 'chocolate_cake',
-    'chocolate_chip_cookie', 'chocolate_cornet', 'chocolate_making', 'chocolate_on_body', 'chocolate_on_breasts', 'chocolate_on_face', 'chocolate_syrup', 'choke_hold',
-    'choker', 'choko_(cup)', 'choppy_bangs', 'chopsticks', 'choshanland_plushy_(arknights)', 'christmas', 'christmas_lights', 'christmas_ornaments',
-    'christmas_present', 'christmas_stocking', 'christmas_tree', 'christmas_wreath', 'chromatic_aberration', 'chrysanthemum', 'chrysanthemum_print', 'chun-li_(cosplay)',
-    'church', 'chuunibyou', 'cigar', 'cigarette', 'cigarette_pack', 'circle', 'circle_cut', 'circle_facial_mark',
-    'circle_formation', 'circle_name', 'circle_skirt', 'circled_9', 'circlet', 'circular_saw', 'cirno_day', 'city',
-    'city_lights', 'cityscape', 'clam', 'clapping', 'clarent_(fate)', 'classic_lolita', 'classroom', 'claw_(weapon)',
-    'claw_foot_bathtub', 'claw_pose', 'claw_ring', 'clawed_gauntlets', 'claws', 'cleaning', 'cleaning_rag', 'clear_sky',
-    'cleavage', 'cleavage_cutout', 'cleave_gag', 'cleaver', 'cleft_chin', 'cleft_of_venus', 'clenched_hand', 'clenched_hands',
-    'clenched_teeth', 'cliff', 'climbing', 'clinging', 'clipboard', 'clitoral_hood', 'clitoral_stimulation', 'clitoris',
-    'clitoris_piercing', 'cloak', 'clock', 'clock_eyes', 'clock_tower', 'clone', 'close-up', 'closed_eyes',
-    'closed_mouth', 'closed_umbrella', 'closet', 'cloth', 'cloth_gag', 'clothed_animal', 'clothed_female_nude_female', 'clothed_female_nude_male',
-    'clothed_male_nude_female', 'clothed_male_nude_male', 'clothed_masturbation', 'clothed_pokemon', 'clothed_robot', 'clothed_sex', 'clothes', 'clothes_around_waist',
-    'clothes_between_breasts', 'clothes_between_thighs', 'clothes_down', 'clothes_grab', 'clothes_hanger', 'clothes_in_front', 'clothes_in_mouth', 'clothes_lift',
-    'clothes_on_floor', 'clothes_pin', 'clothes_pull', 'clothes_theft', 'clothes_tug', 'clothes_writing', 'clothesline', 'clothing_aside',
-    'clothing_cutout', 'cloud', 'cloud_hair_ornament', 'cloud_print', 'cloud_tattoo', 'cloudy_sky', 'clover', 'clover_hair_ornament',
-    'clover_print', 'clow_card', 'clown', 'clown_nose', 'clownfish', 'club_(shape)', 'club_(weapon)', 'clueless',
-    'coat', 'coat_dress', 'coat_on_shoulders', 'coat_partially_removed', 'coattails', 'cobblestone', 'cock_ring', 'cockpit',
-    'cockroach', 'cocktail', 'cocktail_dress', 'cocktail_glass', 'cocktail_shaker', 'coconut', 'coconut_tree', 'coffee',
-    'coffee_maker', 'coffee_mug', 'coffee_pot', 'coffee_table', 'coffin', 'coif', 'coin', 'coin_hair_ornament',
-    'coin_on_string', 'coin_purse', 'coke-bottle_glasses', 'cola', 'cold', 'collage', 'collar', 'collar_grab',
-    'collar_jewel', 'collar_tug', 'collarbone', 'collared_cape', 'collared_capelet', 'collared_coat', 'collared_dress', 'collared_jacket',
-    'collared_leotard', 'collared_shirt', 'collared_shrug', 'collared_vest', 'color_connection', 'color_contrast', 'color_guide', 'color_timer',
-    'color_trace', 'colored_condom', 'colored_extremities', 'colored_eyelashes', 'colored_eyepatch', 'colored_inner_animal_ears', 'colored_inner_hair', 'colored_nipples',
-    'colored_pubic_hair', 'colored_sclera', 'colored_shadow', 'colored_shoe_soles', 'colored_skin', 'colored_speech_bubble', 'colored_stripes', 'colored_tips',
-    'colored_tongue', 'colorful', 'column', 'column_lineup', 'comb', 'combat_boots', 'combat_helmet', 'combat_knife',
-    'come_hither', 'comet', 'comforting', 'comic', 'comic_cover', 'comiket', 'command_spell', 'commissioner_insert',
-    'commissioner_name', 'company_connection', 'company_name', 'comparison', 'compass', 'competition_school_swimsuit', 'competition_swimsuit', 'completely_nude',
-    'compound_eyes', 'compression_shirt', 'computer', 'computer_keyboard', 'computer_mouse', 'concert', 'conch', 'concrete',
-    'condensation', 'condom', 'condom_belt', 'condom_box', 'condom_in_mouth', 'condom_left_inside', 'condom_on_penis', 'condom_packet_strip',
-    'condom_wrapper', 'conductor_baton', 'cone_hair_bun', 'cone_horns', 'confession', 'confetti', 'confrontation', 'confused',
-    'congratulations', 'consensual_tentacles', 'constellation', 'constellation_print', 'constricted_pupils', 'container', 'contemporary', 'content_rating',
-    'contrail', 'contrapposto', 'contrast', 'control_rod_(touhou)', 'controller', 'convenience_store', 'convenient_arm', 'convenient_censoring',
-    'convenient_leg', 'converse', 'convertible', 'cookie', 'cooking', 'cooking_pot', 'cooler', 'cooperative_fellatio',
-    'cooperative_handjob', 'cooperative_paizuri', 'copy_ability', 'copyright_name', 'copyright_notice', 'coral', 'coral_reef', 'corded_phone',
-    'core', 'core_crystal_(xenoblade)', 'cork', 'corn', 'cornrows', 'corpse', 'corruption', 'corsage',
-    'corset', 'cosmetics', 'cosmos_(flower)', 'cosplay', 'costume', 'costume_switch', 'cotton_candy', 'couch',
-    'countdown', 'counter', 'country_connection', 'couple', 'cousins', 'couter', 'cover', 'cover_image',
-    'cover_page', 'covered_abs', 'covered_anus', 'covered_clitoris', 'covered_collarbone', 'covered_eyes', 'covered_face', 'covered_mouth',
-    'covered_navel', 'covered_nipples', 'covered_penetration', 'covered_penis', 'covered_testicles', 'covering_another\'s_eyes', 'covering_another\'s_mouth', 'covering_ass',
-    'covering_breasts', 'covering_chest', 'covering_crotch', 'covering_face', 'covering_nipples', 'covering_one_breast', 'covering_one_eye', 'covering_own_ears',
-    'covering_own_eyes', 'covering_own_mouth', 'covering_privates', 'covering_with_blanket', 'cow', 'cow_boy', 'cow_costume', 'cow_ears',
-    'cow_girl', 'cow_horns', 'cow_print', 'cow_print_bikini', 'cow_print_gloves', 'cow_print_thighhighs', 'cow_tail', 'cowbell',
-    'cowboy', 'cowboy_boots', 'cowboy_hat', 'cowboy_shot', 'cowboy_western', 'cowering', 'cowgirl_position', 'cowlick',
-    'crab', 'crack', 'cracked_floor', 'cracked_glass', 'cracked_skin', 'cracked_wall', 'cracking_knuckles', 'crane_(animal)',
-    'crane_(machine)', 'crane_game', 'crate', 'crater', 'crawling', 'crayon', 'crazy', 'crazy_eyes',
-    'crazy_smile', 'crazy_straw', 'cream', 'cream_on_face', 'cream_puff', 'creator_connection', 'creature', 'creature_and_personification',
-    'creature_on_head', 'creature_on_shoulder', 'credits', 'credits_page', 'crepe', 'crescent', 'crescent_earrings', 'crescent_facial_mark',
-    'crescent_hair_ornament', 'crescent_hat_ornament', 'crescent_moon', 'crescent_necklace', 'crescent_pin', 'crescent_print', 'crescent_rose', 'crest',
-    'crime_prevention_buzzer', 'crisis_management_form_(machimazo)', 'criss-cross_halter', 'criss-cross_straps', 'critter_pick_(honkai:_star_rail)', 'crocodile', 'crocodilian', 'crocodilian_tail',
-    'crocs', 'croissant', 'crop_top', 'crop_top_overhang', 'cropped_arms', 'cropped_head', 'cropped_hoodie', 'cropped_jacket',
-    'cropped_legs', 'cropped_shirt', 'cropped_shoulders', 'cropped_sweater', 'cropped_torso', 'cropped_vest', 'cross', 'cross-body_stretch',
-    'cross-eyed', 'cross-laced_bikini', 'cross-laced_clothes', 'cross-laced_cutout', 'cross-laced_dress', 'cross-laced_footwear', 'cross-laced_legwear', 'cross-laced_skirt',
-    'cross-laced_sleeves', 'cross-laced_slit', 'cross-laced_top', 'cross-section', 'cross-shaped_pupils', 'cross_choker', 'cross_earrings', 'cross_hair_ornament',
-    'cross_necklace', 'cross_pasties', 'cross_print', 'cross_scar', 'cross_tie', 'crossbow', 'crossdressing', 'crossed_ankles',
-    'crossed_arms', 'crossed_bandaids', 'crossed_bangs', 'crossed_legs', 'crosshair', 'crosshatching', 'crossover', 'crosswalk',
-    'crotch', 'crotch_cutout', 'crotch_focus', 'crotch_grab', 'crotch_plate', 'crotch_rope', 'crotch_rub', 'crotch_seam',
-    'crotch_zipper', 'crotchless', 'crotchless_panties', 'crotchless_pants', 'crotchless_pantyhose', 'crow', 'crowbar', 'crowd',
-    'crown', 'crown_braid', 'crown_hair_ornament', 'crown_of_thorns', 'crt', 'crucifixion', 'crumbs', 'crumpled_paper',
-    'crushing', 'crustacean', 'crutch', 'crying', 'crying_with_eyes_open', 'cryokinesis', 'crystal', 'crystal_ball',
-    'crystal_earrings', 'crystal_hair', 'crystal_wings', 'cube', 'cube_hair_ornament', 'cucumber', 'cuddling', 'cue_stick',
-    'cuff_links', 'cuffs', 'cuirass', 'cuisses', 'cum', 'cum_bubble', 'cum_in_ass', 'cum_in_clothes',
-    'cum_in_container', 'cum_in_cup', 'cum_in_mouth', 'cum_in_nose', 'cum_in_pussy', 'cum_inflation', 'cum_on_ass', 'cum_on_back',
-    'cum_on_body', 'cum_on_breasts', 'cum_on_clothes', 'cum_on_eyewear', 'cum_on_feet', 'cum_on_fingers', 'cum_on_floor', 'cum_on_hair',
-    'cum_on_hands', 'cum_on_legs', 'cum_on_legwear', 'cum_on_male', 'cum_on_pectorals', 'cum_on_penis', 'cum_on_pussy', 'cum_on_self',
-    'cum_on_stomach', 'cum_on_tongue', 'cum_overflow', 'cum_pool', 'cum_string', 'cum_through_clothes', 'cumdrip', 'cumdump',
-    'cumulonimbus_cloud', 'cunnilingus', 'cup', 'cup_ramen', 'cupboard', 'cupcake', 'cupless_bra', 'cupping_glass',
-    'cupping_hands', 'curious', 'curled_fingers', 'curled_horns', 'curled_up', 'curly_eyebrows', 'curly_hair', 'curry',
-    'curry_rice', 'cursive', 'cursor', 'curtain_grab', 'curtained_hair', 'curtains', 'curtsey', 'curvy',
-    'cushion', 'cut-in', 'cut_bangs', 'cute_&_girly_(idolmaster)', 'cutoffs', 'cutout_above_navel', 'cuts', 'cutting',
-    'cutting_board', 'cutting_hair', 'cyber_fashion', 'cyberpunk', 'cyborg', 'cycling_uniform', 'cyclops', 'cymbals',
-    'cyrillic', 'd-pad', 'd-pad_hair_ornament', 'd:', 'dagger', 'daikon', 'daisy', 'dakimakura_(medium)',
-    'dakimakura_(object)', 'dalachi_(headdress)', 'damaged', 'dancer', 'dancing', 'dandelion', 'dango', 'danmaku',
-    'dappled_sunlight', 'dark', 'dark-skinned_female', 'dark-skinned_male', 'dark_anus', 'dark_areolae', 'dark_aura', 'dark_background',
-    'dark_blue_hair', 'dark_clouds', 'dark_elf', 'dark_halo', 'dark_labia', 'dark_nipples', 'dark_penis', 'dark_persona',
-    'dark_room', 'dark_skin', 'darkness', 'daruma_doll', 'dashed_eyes', 'dated', 'dating', 'dawn',
-    'day', 'death', 'debris', 'decapitation', 'decepticon', 'decora', 'deep_penetration', 'deep_skin',
-    'deep_wound', 'deepthroat', 'deer', 'deer_antlers', 'deer_ears', 'deer_girl', 'deer_tail', 'deerstalker',
-    'defeat', 'defloration', 'deformed', 'delinquent', 'delivery', 'delmogeny_uniform', 'demon', 'demon_boy',
-    'demon_girl', 'demon_horns', 'demon_slayer_uniform', 'demon_tail', 'demon_wings', 'denim', 'denim_jacket', 'denim_shorts',
-    'denim_skirt', 'depressed', 'depth_charge', 'depth_of_field', 'desert', 'desert_eagle', 'desk', 'desk_lamp',
-    'despair', 'dessert', 'destruction', 'detached_ahoge', 'detached_collar', 'detached_hair', 'detached_hood', 'detached_leggings',
-    'detached_pants', 'detached_sleeves', 'detached_wings', 'detective', 'determined', 'deviantart_logo', 'deviantart_username', 'devil_fruit_power',
-    'diadem', 'diagonal-striped_bow', 'diagonal-striped_bowtie', 'diagonal-striped_clothes', 'diagonal-striped_necktie', 'diagonal_bangs', 'diagram', 'dialogue_box',
-    'diamond-shaped_pupils', 'diamond_(gemstone)', 'diamond_(shape)', 'diamond_button', 'diamond_cutout', 'diamond_earrings', 'diamond_hair_ornament', 'diamond_hairband',
-    'diamond_mouth', 'diaper', 'dice', 'dice_hair_ornament', 'different_reflection', 'different_shadow', 'diffraction_spikes', 'digimon_(creature)',
-    'digital_clock', 'digital_dissolve', 'digital_media_player', 'digital_thermometer', 'digitigrade', 'dilation_tape', 'dildo', 'dildo_riding',
-    'dildo_under_panties', 'dimples_of_venus', 'dinosaur', 'dinosaur_costume', 'dinosaur_tail', 'diorama', 'diploma', 'dirigible',
-    'dirndl', 'dirt', 'dirt_road', 'dirty', 'dirty_clothes', 'dirty_face', 'dirty_feet', 'disco_ball',
-    'disembodied_eye', 'disembodied_hand', 'disembodied_head', 'disembodied_penis', 'disguise', 'disgust', 'disposable_coffee_cup', 'disposable_cup',
-    'dissolving', 'dissolving_clothes', 'distortion', 'dithering', 'diving', 'diving_mask', 'diving_mask_on_head', 'diving_suit',
-    'dixie_cup_hat', 'dj', 'dock', 'doctor', 'dodging', 'dog', 'dog_boy', 'dog_ears',
-    'dog_girl', 'dog_hair_ornament', 'dog_penis', 'dog_tags', 'dog_tail', 'dogeza', 'doggystyle', 'doily',
-    'doll', 'doll_joints', 'dollar_sign', 'dollchestra', 'dolphin', 'dolphin_girl', 'dolphin_hair_ornament', 'dolphin_shorts',
-    'dome', 'dominatrix', 'domino_mask', 'don\'t_say_"lazy"', 'donation_box', 'dongtan_dress', 'doodle_inset', 'door',
-    'doorknob', 'doorway', 'dorsal_fin', 'dorsiflexion', 'dot_mouth', 'dot_nose', 'dotted_background', 'dotted_line',
-    'dou', 'double-breasted', 'double-parted_bangs', 'double_\\m/', 'double_amputee', 'double_bun', 'double_dildo', 'double_exposure',
-    'double_fox_shadow_puppet', 'double_handjob', 'double_horizontal_stripe', 'double_penetration', 'double_scoop', 'double_v', 'double_vertical_stripe', 'double_w',
-    'doughnut', 'doughnut_hair_bun', 'dougi', 'doujin_cover', 'dove', 'down_jacket', 'downblouse', 'dowsing_rod',
-    'doyagao', 'dragging', 'dragon', 'dragon_ball_(object)', 'dragon_boy', 'dragon_bubble_(arknights)', 'dragon_ears', 'dragon_girl',
-    'dragon_horns', 'dragon_print', 'dragon_tail', 'dragon_tattoo', 'dragon_wings', 'dragonfly', 'dragonslayer_(sword)', 'drain_(object)',
-    'draph', 'drawer', 'drawing_(action)', 'drawing_(object)', 'drawing_bow', 'drawing_on_another\'s_face', 'drawing_sword', 'drawing_tablet',
-    'drawn_ears', 'drawn_whiskers', 'drawn_wings', 'drawstring', 'dreadlocks', 'dream_soul', 'dreaming', 'dress',
-    'dress_bow', 'dress_flower', 'dress_lift', 'dress_pants', 'dress_pull', 'dress_ribbon', 'dress_shirt', 'dress_shoes',
-    'dress_swimsuit', 'dress_tug', 'dressing', 'dressing_another', 'drill', 'drill_hair', 'drill_ponytail', 'drill_sidelocks',
-    'drink', 'drink_can', 'drinking', 'drinking_glass', 'drinking_straw', 'drinking_straw_in_mouth', 'dripping', 'driving',
-    'drone', 'drooling', 'drop-shaped_pupils', 'drop_shadow', 'dropping', 'drowning', 'drugged', 'drugs',
-    'drum', 'drum_(container)', 'drum_magazine', 'drum_set', 'drumsticks', 'drunk', 'dry_humping', 'drying',
-    'drying_hair', 'dual_persona', 'dual_wielding', 'dualshock', 'duck', 'duckling', 'duct_tape', 'dudou',
-    'duel', 'duel_academy_uniform_(yu-gi-oh!_gx)', 'duel_disk', 'duel_monster', 'duffel_bag', 'duffel_coat', 'dullahan', 'dumbbell',
-    'dumpling', 'dungeon', 'dusk', 'dusk_ball', 'dust', 'dust_cloud', 'duster', 'dutch_angle',
-    'dvd_cover', 'dwarf', 'dyed_bangs', 'dying', 'dynamax_band', 'dynamic_pose', 'e.g.o_(project_moon)', 'eagle',
-    'ear_birthmark', 'ear_blush', 'ear_bow', 'ear_chain', 'ear_cleaning', 'ear_covers', 'ear_ornament', 'ear_piercing',
-    'ear_protection', 'ear_ribbon', 'ear_scrunchie', 'ear_tag', 'ear_wiggle', 'earbuds', 'earclip', 'earmuffs',
-    'earphones', 'earphones_removed', 'earpiece', 'earrings', 'ears_down', 'ears_through_headwear', 'ears_visible_through_hair', 'earth_(ornament)',
-    'earth_(planet)', 'earth_federation', 'easel', 'east_asian_architecture', 'easter', 'easter_egg', 'eastern_dragon', 'eastern_dragon_horns',
-    'eastern_dragon_tail', 'eating', 'eclipse', 'eden_academy_school_uniform', 'eel', 'egasumi', 'egg', 'egg_(food)',
-    'egg_hair_ornament', 'egg_laying', 'egg_vibrator', 'egg_yolk', 'eggplant', 'eggshell', 'ehoumaki', 'eighth_note',
-    'ejaculating_while_penetrated', 'ejaculation', 'ejaculation_under_clothes', 'elbow_carry', 'elbow_gloves', 'elbow_on_knee', 'elbow_on_table', 'elbow_pads',
-    'elbow_rest', 'elbow_sleeve', 'elbows_on_table', 'eldritch_abomination', 'electric_bass_guitar', 'electric_fan', 'electric_guitar', 'electric_plug',
-    'electric_plug_tail', 'electrical_outlet', 'electricity', 'electrokinesis', 'elephant', 'elevator', 'elezen', 'elf',
-    'elvaan', 'ema', 'email_address', 'embarrassed', 'embellished_costume', 'embers', 'emblem', 'embroidery',
-    'emo_fashion', 'emoji', 'emoticon', 'emotionless_sex', 'emphasis_lines', 'empire_waist', 'employee_uniform', 'empty_eyes',
-    'empty_picture_frame', 'en_pointe', 'enema', 'energy', 'energy_ball', 'energy_barrier', 'energy_beam', 'energy_blade',
-    'energy_cannon', 'energy_drink', 'energy_gun', 'energy_sword', 'energy_weapon', 'energy_wings', 'engine', 'english_text',
-    'engrish_text', 'enmaided', 'enpera', 'entangled', 'entrance', 'envelope', 'eotech', 'epaulettes',
-    'episode_number', 'eraser', 'erect_clitoris', 'erection', 'erection_under_clothes', 'erlenmeyer_flask', 'ero_guro', 'error_message',
-    'erune', 'euphonium', 'eurasian_tree_sparrow', 'european_architecture', 'evangelion_(mecha)', 'evening', 'evening_gown', 'everyone',
-    'evil_eyes', 'evil_grin', 'evil_smile', 'evoker', 'evolutionary_line', 'excalibur_(fate/stay_night)', 'excalibur_morgan_(fate)', 'excessive_cum',
-    'excessive_pubic_hair', 'excessive_pussy_juice', 'excited', 'exercise_ball', 'exercising', 'exhausted', 'exhibitionism', 'exoskeleton',
-    'exploding_clothes', 'explosion', 'explosive', 'exposed_pocket', 'expression_chart', 'expressionless', 'expressions', 'expressive_clothes',
-    'expressive_hair', 'extra_arms', 'extra_ears', 'extra_eyes', 'extra_faces', 'extra_legs', 'extra_mouth', 'extra_penises',
-    'extra_pupils', 'eye_black', 'eye_contact', 'eye_focus', 'eye_mask', 'eye_of_horus', 'eye_print', 'eye_reflection',
-    'eye_trail', 'eyeball', 'eyebrow_cut', 'eyebrow_piercing', 'eyebrows_hidden_by_hair', 'eyelash_ornament', 'eyelashes', 'eyelid_pull',
-    'eyeliner', 'eyepatch', 'eyepatch_bikini', 'eyes_in_shadow', 'eyes_visible_through_hair', 'eyeshadow', 'eyewear_hang', 'eyewear_on_head',
-    'eyewear_on_headwear', 'eyewear_strap', 'fabulous', 'face-to-face', 'face_between_breasts', 'face_down', 'face_grab', 'face_in_ass',
-    'face_in_pillow', 'face_punch', 'face_to_breasts', 'facebook_logo', 'facebook_username', 'faceless', 'faceless_female', 'faceless_male',
-    'facepaint', 'facepalm', 'faceplant', 'facial', 'facial_hair', 'facial_mark', 'facial_tattoo', 'facing_ahead',
-    'facing_another', 'facing_away', 'facing_down', 'facing_to_the_side', 'facing_up', 'facing_viewer', 'fading', 'fading_border',
-    'failure', 'fairy', 'fairy_wings', 'fake_animal_ears', 'fake_antlers', 'fake_claws', 'fake_cover', 'fake_facial_hair',
-    'fake_halo', 'fake_horns', 'fake_magazine_cover', 'fake_mustache', 'fake_nails', 'fake_phone_screenshot', 'fake_screenshot', 'fake_tail',
-    'fake_video', 'fake_wings', 'falchion_(fire_emblem)', 'fallen_angel', 'fallen_down', 'falling', 'falling_feathers', 'falling_flower',
-    'falling_leaves', 'falling_petals', 'false_smile', 'familiar', 'family', 'family_crest', 'fanbox_username', 'fang',
-    'fang_out', 'fanged_bangs', 'fangs', 'fangs_out', 'fanning_face', 'fanning_self', 'fanny_pack', 'fantasy',
-    'fascinator', 'fashion', 'fast_food', 'fast_food_uniform', 'fat', 'fat_man', 'fat_mons', 'fat_rolls',
-    'father_and_daughter', 'father_and_son', 'fatui_coat', 'faucet', 'faulds', 'faux_figurine', 'faux_traditional_media', 'feather-trimmed_sleeves',
-    'feather_boa', 'feather_dress', 'feather_earrings', 'feather_hair', 'feather_hair_ornament', 'feather_trim', 'feathered_wings', 'feathers',
-    'fedora', 'feeding', 'feet', 'feet_on_chair', 'feet_on_table', 'feet_only', 'feet_out_of_frame', 'feet_up',
-    'fellatio', 'fellatio_gesture', 'female_butler', 'female_ejaculation', 'female_ejaculation_through_clothes', 'female_goblin', 'female_masturbation', 'female_orc',
-    'female_orgasm', 'female_pervert', 'female_pov', 'female_pubic_hair', 'female_service_cap', 'femdom', 'fence', 'fender_stratocaster',
-    'fern', 'ferret', 'ferris_wheel', 'fertilization', 'festival', 'fetal_position', 'fever', 'fewer_digits',
-    'fff_threesome', 'ffm_threesome', 'fidgeting', 'field', 'field_of_blades', 'fiery_background', 'fiery_hair', 'fiery_horns',
-    'fiery_tail', 'fiery_wings', 'fighter_jet', 'fighting', 'fighting_game', 'fighting_stance', 'figure', 'figure_four_sitting',
-    'film_grain', 'film_strip', 'fine_art_parody', 'fine_fabric_emphasis', 'finger_counting', 'finger_frame', 'finger_gun', 'finger_heart',
-    'finger_in_another\'s_mouth', 'finger_in_own_mouth', 'finger_on_trigger', 'finger_sucking', 'finger_tattoo', 'finger_to_another\'s_mouth', 'finger_to_cheek', 'finger_to_face',
-    'finger_to_mouth', 'finger_to_own_chin', 'fingering', 'fingering_from_behind', 'fingering_through_clothes', 'fingering_through_panties', 'fingerless_gloves', 'fingernails',
-    'fingers_to_cheeks', 'fingers_to_mouth', 'fingersmile', 'fins', 'fire', 'fire_extinguisher', 'fireball', 'firefighter',
-    'fireflies', 'firelock', 'fireplace', 'fireworks', 'firing', 'first_aid_kit', 'fish', 'fish_(food)',
-    'fish_bone', 'fish_boy', 'fish_girl', 'fish_hair_ornament', 'fish_print', 'fish_skeleton', 'fish_tail', 'fish_tank',
-    'fishbowl', 'fisheye', 'fishing', 'fishing_hook', 'fishing_line', 'fishing_rod', 'fishnet_bodysuit', 'fishnet_gloves',
-    'fishnet_pantyhose', 'fishnet_sleeves', 'fishnet_socks', 'fishnet_thighhighs', 'fishnet_top', 'fishnets', 'fist_bump', 'fist_pump',
-    'fitting_room', 'flaccid', 'flag', 'flag_background', 'flag_print', 'flagpole', 'flailing', 'flak_jacket',
-    'flame-tipped_tail', 'flame_print', 'flamethrower', 'flaming_eye', 'flaming_eyes', 'flaming_hand', 'flaming_sword', 'flaming_weapon',
-    'flapping', 'flashback', 'flashing', 'flashlight', 'flask', 'flat_ass', 'flat_cap', 'flat_chest',
-    'flat_chest_grab', 'flat_color', 'flat_screen_tv', 'flats', 'flattop', 'fleeing', 'fleur-de-lis', 'fleur_de_lapin_uniform',
-    'flexible', 'flexing', 'flight_deck', 'flintlock', 'flip-flops', 'flip_phone', 'flipped_hair', 'flippers',
-    'flirting', 'floating', 'floating_book', 'floating_cape', 'floating_card', 'floating_clothes', 'floating_earring', 'floating_hair',
-    'floating_hair_ornament', 'floating_headgear', 'floating_island', 'floating_neckwear', 'floating_object', 'floating_rock', 'floating_scarf', 'floating_skull',
-    'floating_sword', 'floating_weapon', 'flock', 'floor', 'floppy_ears', 'floral_background', 'floral_print', 'floral_print_bikini',
-    'floral_print_dress', 'floral_print_kimono', 'flower', 'flower-shaped_pupils', 'flower_(symbol)', 'flower_basket', 'flower_bed', 'flower_bracelet',
-    'flower_brooch', 'flower_choker', 'flower_earrings', 'flower_field', 'flower_focus', 'flower_hairpin', 'flower_in_eye', 'flower_in_mouth',
-    'flower_knot', 'flower_necklace', 'flower_on_chest', 'flower_on_head', 'flower_on_liquid', 'flower_ornament', 'flower_over_eye', 'flower_over_mouth',
-    'flower_pot', 'flower_tattoo', 'flower_trim', 'flower_wreath', 'fluffy', 'fluffy_hair', 'fluorescent_lamp', 'flustered',
-    'flute', 'fly', 'flying', 'flying_button', 'flying_fish', 'flying_kick', 'flying_paper', 'flying_sweatdrops',
-    'flying_teardrops', 'foam', 'fog', 'fold-over_boots', 'folded', 'folded_clothes', 'folded_fan', 'folded_hair',
-    'folded_ponytail', 'folder', 'folding_chair', 'folding_fan', 'foliage', 'food', 'food-themed_background', 'food-themed_clothes',
-    'food-themed_creature', 'food-themed_earrings', 'food-themed_hair_ornament', 'food_art', 'food_bite', 'food_focus', 'food_in_mouth', 'food_insertion',
-    'food_name', 'food_on_body', 'food_on_breasts', 'food_on_clothes', 'food_on_face', 'food_on_hand', 'food_on_head', 'food_packaging',
-    'food_print', 'food_stand', 'food_wrapper', 'foot_dangle', 'foot_focus', 'foot_out_of_frame', 'foot_up', 'foot_worship',
-    'footjob', 'footprints', 'footwear_bow', 'footwear_flower', 'footwear_ribbon', 'for_adoption', 'forced_orgasm', 'forced_smile',
-    'foregrip', 'forehead', 'forehead-to-forehead', 'forehead_jewel', 'forehead_mark', 'forehead_protector', 'forehead_tattoo', 'foreplay',
-    'foreshortening', 'foreskin', 'forest', 'fork', 'forked_eyebrows', 'forked_tail', 'forked_tongue', 'formal_clothes',
-    'fortified_suit', 'fortissimo', 'forward_facing_horns', 'fountain', 'four-leaf_clover', 'four-leaf_clover_hair_ornament', 'fourth_east_high_school_uniform', 'fourth_wall',
-    'fox', 'fox_boy', 'fox_ears', 'fox_girl', 'fox_hair_ornament', 'fox_mask', 'fox_shadow_puppet', 'fox_tail',
-    'framed_breasts', 'freckles', 'freediving', 'french_flag', 'french_fries', 'french_kiss', 'french_text', 'fried_chicken',
-    'fried_egg', 'fried_rice', 'friends', 'frilled_apron', 'frilled_armband', 'frilled_ascot', 'frilled_bikini', 'frilled_bikini_top',
-    'frilled_bow', 'frilled_bra', 'frilled_camisole', 'frilled_capelet', 'frilled_choker', 'frilled_collar', 'frilled_cuffs', 'frilled_dress',
-    'frilled_gloves', 'frilled_hair_tubes', 'frilled_hairband', 'frilled_hat', 'frilled_headwear', 'frilled_jacket', 'frilled_kimono', 'frilled_leotard',
-    'frilled_one-piece_swimsuit', 'frilled_panties', 'frilled_pillow', 'frilled_ribbon', 'frilled_sailor_collar', 'frilled_sash', 'frilled_shawl', 'frilled_shirt',
-    'frilled_shirt_collar', 'frilled_shorts', 'frilled_skirt', 'frilled_sleeves', 'frilled_socks', 'frilled_straps', 'frilled_thighhighs', 'frilled_umbrella',
-    'frilled_vest', 'frilled_wrist_cuffs', 'frilled_wristband', 'frills', 'fringe_trim', 'frog', 'frog_girl', 'frog_hair_ornament',
-    'frog_print', 'frogtie', 'from_above', 'from_behind', 'from_below', 'from_outside', 'from_side', 'front-hook_bra',
-    'front-print_panties', 'front-seamed_legwear', 'front-tie_bikini_top', 'front-tie_bra', 'front-tie_top', 'front-to-back', 'front_ponytail', 'front_slit',
-    'front_zipper_swimsuit', 'frontless_outfit', 'frottage', 'frown', 'frozen', 'fruit', 'fruit_cup', 'fruit_hat_ornament',
-    'fruit_on_head', 'frying_pan', 'fucked_silly', 'fujoshi', 'full-body_tattoo', 'full-face_blush', 'full-length_mirror', 'full-length_zipper',
-    'full-package_futanari', 'full_armor', 'full_beard', 'full_body', 'full_composition', 'full_moon', 'full_mouth', 'full_nelson',
-    'fumo_(doll)', 'fundoshi', 'funeral_dress', 'funnels_(gundam)', 'fur-tipped_tail', 'fur-trimmed_bikini', 'fur-trimmed_boots', 'fur-trimmed_cape',
-    'fur-trimmed_capelet', 'fur-trimmed_cloak', 'fur-trimmed_coat', 'fur-trimmed_collar', 'fur-trimmed_dress', 'fur-trimmed_footwear', 'fur-trimmed_gloves', 'fur-trimmed_headwear',
-    'fur-trimmed_hood', 'fur-trimmed_jacket', 'fur-trimmed_kimono', 'fur-trimmed_legwear', 'fur-trimmed_leotard', 'fur-trimmed_shirt', 'fur-trimmed_shorts', 'fur-trimmed_skirt',
-    'fur-trimmed_sleeves', 'fur-trimmed_thighhighs', 'fur_bikini', 'fur_boots', 'fur_cape', 'fur_choker', 'fur_cloak', 'fur_coat',
-    'fur_collar', 'fur_cuffs', 'fur_hat', 'fur_jacket', 'fur_scarf', 'fur_shawl', 'fur_trim', 'furigana',
-    'furious', 'furisode', 'furisode_sleeves', 'furoshiki', 'furrification', 'furrowed_brow', 'furry', 'furry_female',
-    'furry_male', 'furry_with_furry', 'furry_with_non-furry', 'fusion', 'fusuma', 'futa_on_male', 'futa_with_female', 'futa_with_futa',
-    'futa_with_male', 'futa_without_pussy', 'futanari', 'futanari_masturbation', 'futanari_pov', 'futasub', 'futon', 'fuuin_no_tsue',
-    'g-string', 'gae_bolg_(fate)', 'gae_buidhe_(fate)', 'gae_dearg_(fate)', 'gag', 'gag_harness', 'gagged', 'gaijin_4koma_(meme)',
-    'gakuran', 'galaxy', 'galaxy_expedition_team_survey_corps_uniform', 'gambeson', 'game_boy', 'game_boy_(original)', 'game_console', 'game_controller',
-    'game_development_department_(blue_archive)', 'game_screenshot_background', 'game_screenshot_inset', 'gamepad', 'gameplay_mechanics', 'gaming_chair', 'gangbang', 'ganguro',
-    'gao', 'gap_(touhou)', 'gaping', 'garden', 'garland_(decoration)', 'garlean', 'garreg_mach_monastery_uniform', 'garrison_cap',
-    'garter_belt', 'garter_straps', 'gas_mask', 'gate', 'gate_of_babylon_(fate)', 'gathers', 'gatling_gun', 'gauntlets',
-    'gauze', 'gauze_on_cheek', 'gears', 'gekkoukan_high_school_uniform', 'gelatin', 'gem', 'gem_(symbol)', 'gem_hair_ornament',
-    'gem_uniform_(houseki_no_kuni)', 'genderswap', 'genderswap_(ftm)', 'genderswap_(mtf)', 'genderswap_(otf)', 'gendou_pose', 'genre_connection', 'german_clothes',
-    'german_flag', 'german_flag_bikini', 'german_text', 'germany', 'gerudo', 'gerudo_set_(zelda)', 'gesture', 'gesugao',
-    'geta', 'getabako', 'ghost', 'ghost_costume', 'ghost_hair_ornament', 'ghost_pose', 'ghost_print', 'ghost_tail',
-    'giant', 'giant_male', 'giant_monster', 'giantess', 'gibson_les_paul', 'gift', 'gift_bag', 'gift_box',
-    'gigantamax', 'gigantic_breasts', 'gigantic_penis', 'gills', 'gingerbread_man', 'gingham', 'ginkgo_leaf', 'ginkgo_tree',
-    'giraffe', 'giraffe_ears', 'girl_on_top', 'girl_sandwich', 'girly_boy', 'girthy_penis', 'giving', 'giving_up_the_ghost',
-    'gladiator_sandals', 'glaive_(polearm)', 'glands_of_montgomery', 'glansjob', 'glaring', 'glasgow_smile', 'glass', 'glass_bottle',
-    'glass_door', 'glass_shards', 'glass_slipper', 'glass_table', 'glasses', 'gleam', 'glint', 'glitch',
-    'glitter', 'globe', 'glock', 'glomp', 'gloom_(expression)', 'glory_hole', 'glory_wall', 'glove_bow',
-    'glove_in_mouth', 'glove_pull', 'gloved_handjob', 'gloves', 'glowing', 'glowing_butterfly', 'glowing_eye', 'glowing_eyes',
-    'glowing_flower', 'glowing_hair', 'glowing_hand', 'glowing_horns', 'glowing_mouth', 'glowing_petals', 'glowing_sword', 'glowing_tattoo',
-    'glowing_weapon', 'glowing_wings', 'glowstick', 'glutton', 'goat', 'goat_boy', 'goat_ears', 'goat_girl',
-    'goat_horns', 'goat_tail', 'goatee', 'goatee_stubble', 'goblin', 'goggles', 'goggles_around_neck', 'goggles_on_head',
-    'goggles_on_headwear', 'gohei', 'gokkun', 'gold', 'gold_armlet', 'gold_armor', 'gold_belt', 'gold_bikini',
-    'gold_bracelet', 'gold_chain', 'gold_choker', 'gold_coin', 'gold_crown', 'gold_earrings', 'gold_footwear', 'gold_hairband',
-    'gold_necklace', 'gold_ring', 'gold_trim', 'golden_apple', 'golden_arms', 'goldfish', 'golem', 'golf_club',
-    'good_end', 'gorget', 'gorilla', 'goth_fashion', 'gothic_lolita', 'gourd', 'gown', 'grabbing_another\'s_arm',
-    'grabbing_another\'s_ass', 'grabbing_another\'s_breast', 'grabbing_another\'s_chin', 'grabbing_another\'s_ear', 'grabbing_another\'s_hair', 'grabbing_from_behind', 'grabbing_own_ass', 'grabbing_own_breast',
-    'gradient_background', 'gradient_clothes', 'gradient_dress', 'gradient_eyes', 'gradient_hair', 'gradient_horns', 'gradient_jacket', 'gradient_kimono',
-    'gradient_legwear', 'gradient_nails', 'gradient_ribbon', 'gradient_skin', 'gradient_skirt', 'gradient_sky', 'gradient_sleeves', 'gradient_wings',
-    'graduation', 'graffiti', 'grand_piano', 'grape_hair_ornament', 'grapes', 'grass', 'grass_root_youkai_network', 'grate',
-    'grave', 'graveyard', 'grease_(mechanical)', 'greatsword', 'greaves', 'greco-roman_clothes', 'greek_cross', 'greek_toe',
-    'green-framed_eyewear', 'green-tinted_eyewear', 'green_apron', 'green_armband', 'green_armor', 'green_ascot', 'green_background', 'green_bag',
-    'green_bandana', 'green_belt', 'green_bikini', 'green_bodysuit', 'green_border', 'green_bow', 'green_bowtie', 'green_bra',
-    'green_brooch', 'green_camisole', 'green_cape', 'green_capelet', 'green_cardigan', 'green_choker', 'green_cloak', 'green_coat',
-    'green_collar', 'green_dress', 'green_eyes', 'green_eyeshadow', 'green_feathers', 'green_fire', 'green_flower', 'green_footwear',
-    'green_fur', 'green_gemstone', 'green_gloves', 'green_hair', 'green_hairband', 'green_hakama', 'green_halo', 'green_hat',
-    'green_headband', 'green_hood', 'green_hoodie', 'green_horns', 'green_jacket', 'green_jumpsuit', 'green_kimono', 'green_leotard',
-    'green_lips', 'green_nails', 'green_neckerchief', 'green_necktie', 'green_one-piece_swimsuit', 'green_outline', 'green_overalls', 'green_pajamas',
-    'green_panties', 'green_pants', 'green_pantyhose', 'green_pubic_hair', 'green_pupils', 'green_ribbon', 'green_robe', 'green_rose',
-    'green_sailor_collar', 'green_sash', 'green_scales', 'green_scarf', 'green_sclera', 'green_scrunchie', 'green_serafuku', 'green_shirt',
-    'green_shorts', 'green_skin', 'green_skirt', 'green_sky', 'green_sleeves', 'green_socks', 'green_sports_bra', 'green_suit',
-    'green_sweater', 'green_sweater_vest', 'green_tail', 'green_tank_top', 'green_tea', 'green_theme', 'green_thighhighs', 'green_tongue',
-    'green_trim', 'green_tunic', 'green_vest', 'green_visor', 'green_wings', 'greenhouse', 'grenade', 'grenade_launcher',
-    'grenade_pin', 'grey-framed_eyewear', 'grey_apron', 'grey_ascot', 'grey_background', 'grey_bag', 'grey_belt', 'grey_bikini',
-    'grey_bodysuit', 'grey_border', 'grey_bow', 'grey_bowtie', 'grey_bra', 'grey_camisole', 'grey_cape', 'grey_capelet',
-    'grey_cardigan', 'grey_cat', 'grey_choker', 'grey_cloak', 'grey_coat', 'grey_dress', 'grey_eyes', 'grey_eyeshadow',
-    'grey_flower', 'grey_footwear', 'grey_fur', 'grey_gloves', 'grey_hair', 'grey_hairband', 'grey_hakama', 'grey_halo',
-    'grey_hat', 'grey_hoodie', 'grey_horns', 'grey_jacket', 'grey_kimono', 'grey_leotard', 'grey_male_underwear', 'grey_nails',
-    'grey_neckerchief', 'grey_necktie', 'grey_one-piece_swimsuit', 'grey_outline', 'grey_overalls', 'grey_panties', 'grey_pants', 'grey_pantyhose',
-    'grey_pubic_hair', 'grey_ribbon', 'grey_robe', 'grey_sailor_collar', 'grey_scarf', 'grey_sclera', 'grey_serafuku', 'grey_shirt',
-    'grey_shorts', 'grey_skin', 'grey_skirt', 'grey_sky', 'grey_sleeves', 'grey_socks', 'grey_sports_bra', 'grey_suit',
-    'grey_sweater', 'grey_sweater_vest', 'grey_tail', 'grey_tank_top', 'grey_theme', 'grey_thighhighs', 'grey_vest', 'grey_wings',
-    'greyscale', 'greyscale_with_colored_background', 'grid', 'grid_background', 'griffin_&_kryuger_military_uniform', 'grill', 'grilling', 'grimace',
-    'grimoire', 'grimoire_of_alice', 'grin', 'grinding', 'groceries', 'grocery_bag', 'groin', 'groin_tendon',
-    'groom', 'groping', 'group_hug', 'group_name', 'group_picture', 'group_sex', 'gryffindor', 'guard_rail',
-    'guided_breast_grab', 'guided_penetration', 'guiding_hand', 'guitar', 'guitar_case', 'gumroad_username', 'gun', 'gun_on_back',
-    'gun_sling', 'gun_to_head', 'gunblade', 'gunbuster_pose', 'gunpla', 'guro', 'gusset', 'gyaru',
-    'gyaru_v', 'gyaruo', 'gym', 'gym_shirt', 'gym_shorts', 'gym_storeroom', 'gym_uniform', 'gymnastics',
-    'h&k_hk416', 'h&k_ump', 'habit', 'hachimaki', 'hadanugi_dousa', 'hagoita', 'hagoromo', 'hair_beads',
-    'hair_behind_ear', 'hair_bell', 'hair_between_breasts', 'hair_between_eyes', 'hair_bobbles', 'hair_bow', 'hair_brush', 'hair_bun',
-    'hair_censor', 'hair_color_connection', 'hair_down', 'hair_dryer', 'hair_ears', 'hair_extensions', 'hair_flaps', 'hair_flip',
-    'hair_flower', 'hair_flowing_over', 'hair_focus', 'hair_horns', 'hair_in_own_mouth', 'hair_intakes', 'hair_lift', 'hair_on_horn',
-    'hair_ornament', 'hair_over_breasts', 'hair_over_eyes', 'hair_over_face', 'hair_over_one_breast', 'hair_over_one_eye', 'hair_over_shoulder', 'hair_pulled_back',
-    'hair_ribbon', 'hair_rings', 'hair_scrunchie', 'hair_slicked_back', 'hair_spread_out', 'hair_stick', 'hair_through_headwear', 'hair_tie',
-    'hair_tie_in_mouth', 'hair_tubes', 'hair_up', 'hair_vines', 'hairband', 'hairclip', 'hairdressing', 'hairjob',
-    'hairpin', 'hairpods', 'hairstyle_switch', 'hairy', 'hakama', 'hakama_pants', 'hakama_short_skirt', 'hakama_shorts',
-    'hakama_skirt', 'hakuo_school_uniform', 'hakurei_reimu_(cosplay)', 'hakurei_shrine', 'halberd', 'half-closed_eye', 'half-closed_eyes', 'half-erect',
-    'half-skirt', 'half-spread_pussy', 'half_gloves', 'half_mask', 'half_note', 'half_up_braid', 'half_updo', 'halfling',
-    'halftone', 'halftone_background', 'halloween', 'halloween_bucket', 'halloween_costume', 'hallway', 'halo', 'halo_behind_head',
-    'halter_dress', 'halter_shirt', 'halterneck', 'hamaya', 'hamburger_steak', 'hammer', 'hammer_and_sickle', 'hammock',
-    'hamster', 'han\'eri', 'hanafuda', 'hanami', 'hanasakigawa_school_uniform', 'hanbok', 'hand_between_legs', 'hand_fan',
-    'hand_focus', 'hand_grab', 'hand_grip', 'hand_hair', 'hand_in_another\'s_hair', 'hand_in_another\'s_panties', 'hand_in_own_hair', 'hand_in_own_panties',
-    'hand_in_panties', 'hand_in_pocket', 'hand_milking', 'hand_mirror', 'hand_net', 'hand_on_another\'s_arm', 'hand_on_another\'s_ass', 'hand_on_another\'s_back',
-    'hand_on_another\'s_cheek', 'hand_on_another\'s_chest', 'hand_on_another\'s_chin', 'hand_on_another\'s_ear', 'hand_on_another\'s_face', 'hand_on_another\'s_hand', 'hand_on_another\'s_head', 'hand_on_another\'s_hip',
-    'hand_on_another\'s_knee', 'hand_on_another\'s_leg', 'hand_on_another\'s_neck', 'hand_on_another\'s_shoulder', 'hand_on_another\'s_stomach', 'hand_on_another\'s_thigh', 'hand_on_another\'s_waist', 'hand_on_eyewear',
-    'hand_on_floor', 'hand_on_glass', 'hand_on_ground', 'hand_on_hand', 'hand_on_headphones', 'hand_on_headwear', 'hand_on_hilt', 'hand_on_lap',
-    'hand_on_leg', 'hand_on_own_arm', 'hand_on_own_ass', 'hand_on_own_cheek', 'hand_on_own_chest', 'hand_on_own_chin', 'hand_on_own_crotch', 'hand_on_own_ear',
-    'hand_on_own_elbow', 'hand_on_own_face', 'hand_on_own_forehead', 'hand_on_own_head', 'hand_on_own_hip', 'hand_on_own_knee', 'hand_on_own_leg', 'hand_on_own_neck',
-    'hand_on_own_penis', 'hand_on_own_shoulder', 'hand_on_own_stomach', 'hand_on_own_thigh', 'hand_on_railing', 'hand_on_table', 'hand_on_wall', 'hand_over_another\'s_mouth',
-    'hand_over_eye', 'hand_over_face', 'hand_over_own_mouth', 'hand_puppet', 'hand_rest', 'hand_tattoo', 'hand_to_head', 'hand_to_own_mouth',
-    'hand_under_clothes', 'hand_under_shirt', 'hand_up', 'hand_wraps', 'handbag', 'handcuffs', 'handgun', 'handheld_game_console',
-    'handjob', 'handjob_gesture', 'handkerchief', 'handprint', 'handrail', 'hands_in_hair', 'hands_in_opposite_sleeves', 'hands_in_pocket',
-    'hands_in_pockets', 'hands_on_another\'s_back', 'hands_on_another\'s_cheeks', 'hands_on_another\'s_chest', 'hands_on_another\'s_face', 'hands_on_another\'s_head', 'hands_on_another\'s_hips', 'hands_on_another\'s_shoulders',
-    'hands_on_another\'s_stomach', 'hands_on_another\'s_thighs', 'hands_on_another\'s_waist', 'hands_on_feet', 'hands_on_floor', 'hands_on_ground', 'hands_on_headphones', 'hands_on_headwear',
-    'hands_on_hilt', 'hands_on_lap', 'hands_on_own_ass', 'hands_on_own_breasts', 'hands_on_own_cheeks', 'hands_on_own_chest', 'hands_on_own_chin', 'hands_on_own_face',
-    'hands_on_own_head', 'hands_on_own_hips', 'hands_on_own_knees', 'hands_on_own_legs', 'hands_on_own_stomach', 'hands_on_own_thighs', 'hands_on_shoulders', 'hands_up',
-    'handsfree_ejaculation', 'handsfree_paizuri', 'handshake', 'handstand', 'haneoka_school_uniform', 'hanetsuki', 'hanfu', 'hangar',
-    'hanging', 'hanging_breasts', 'hanging_light', 'hanging_plant', 'hanging_scroll', 'haniwa_(statue)', 'hannya', 'hanten_(clothes)',
-    'haori', 'happi', 'happy', 'happy_aura', 'happy_birthday', 'happy_facial', 'happy_halloween', 'happy_new_year',
-    'happy_sex', 'happy_tears', 'happy_valentine', 'haramaki', 'harbor', 'hard_hat', 'harem', 'harem_outfit',
-    'harem_pants', 'harness', 'harp', 'harpy', 'harvin', 'hashitsuki_nata', 'hashtag', 'hasu_no_sora_school_uniform',
-    'hat', 'hat_bell', 'hat_belt', 'hat_bow', 'hat_feather', 'hat_flower', 'hat_on_back', 'hat_ornament',
-    'hat_over_eyes', 'hat_over_one_eye', 'hat_pin', 'hat_ribbon', 'hat_tassel', 'hat_tip', 'hat_with_ears', 'hatching_(texture)',
-    'hatsuboshi_gakuen_school_uniform', 'hatsumoude', 'hatsune_miku_(cosplay)', 'hauchiwa', 'have_to_pee', 'hawaiian_shirt', 'hawk', 'hay',
-    'head-mounted_display', 'head_back', 'head_between_breasts', 'head_between_thighs', 'head_bump', 'head_chain', 'head_down', 'head_fins',
-    'head_grab', 'head_on_another\'s_shoulder', 'head_on_arm', 'head_on_chest', 'head_on_hand', 'head_on_head', 'head_on_pillow', 'head_on_table',
-    'head_only', 'head_out_of_frame', 'head_rest', 'head_steam', 'head_tilt', 'head_wings', 'head_wreath', 'headband',
-    'headdress', 'headgear', 'headlamp', 'headless', 'headlock', 'headpat', 'headphones', 'headphones_around_neck',
-    'headphones_removed', 'headpiece', 'heads-up_display', 'heads_together', 'headscarf', 'headset', 'headwear_with_attached_mittens', 'health_bar',
-    'heart', 'heart-shaped_boob_challenge', 'heart-shaped_box', 'heart-shaped_buckle', 'heart-shaped_chocolate', 'heart-shaped_eyes', 'heart-shaped_eyewear', 'heart-shaped_food',
-    'heart-shaped_gem', 'heart-shaped_lock', 'heart-shaped_ornament', 'heart-shaped_pillow', 'heart-shaped_pupils', 'heart_(organ)', 'heart_ahoge', 'heart_background',
-    'heart_balloon', 'heart_belt', 'heart_brooch', 'heart_button', 'heart_censor', 'heart_choker', 'heart_collar', 'heart_cutout',
-    'heart_earrings', 'heart_eyepatch', 'heart_facial_mark', 'heart_hair', 'heart_hair_ornament', 'heart_hands', 'heart_hands_duo', 'heart_hands_failure',
-    'heart_in_eye', 'heart_in_heart_hands', 'heart_in_mouth', 'heart_lock_(kantai_collection)', 'heart_maebari', 'heart_necklace', 'heart_o-ring', 'heart_of_string',
-    'heart_on_chest', 'heart_panties', 'heart_pasties', 'heart_pendant', 'heart_print', 'heart_straw', 'heart_tail', 'heart_tattoo',
-    'heart_wand', 'heartbeat', 'heater', 'heavenly_boat_maanna', 'heavy', 'heavy_breathing', 'heavy_machine_gun', 'heckler_&_koch',
-    'hedge', 'hedgehog', 'hedgehog_boy', 'hedgehog_girl', 'heel_up', 'height', 'height_chart', 'height_difference',
-    'helicopter', 'helm', 'helmet', 'helmet_over_eyes', 'henshin', 'henshin_pose', 'herensuge_girls_academy_school_uniform', 'hestia_(danmachi)_(cosplay)',
-    'hetero', 'heterochromia', 'hexagon', 'hexagon_hair_ornament', 'hexagon_print', 'hexagram', 'hibiscus', 'hickey',
-    'hiding', 'hiding_behind_another', 'hieroglyphics', 'high-low_skirt', 'high-visibility_clothing', 'high-visibility_vest', 'high-waist_pants', 'high-waist_pantyhose',
-    'high-waist_shorts', 'high-waist_skirt', 'high_belt', 'high_collar', 'high_contrast', 'high_five', 'high_heel_boots', 'high_heel_sandals',
-    'high_heels', 'high_kick', 'high_ponytail', 'high_side_ponytail', 'high_tops', 'highleg', 'highleg_bikini', 'highleg_leotard',
-    'highleg_one-piece_swimsuit', 'highleg_panties', 'hikarizaka_private_high_school_uniform', 'hikimayu', 'hill', 'hime_cut', 'himejoshi', 'himeya_company_uniform',
-    'hinamatsuri', 'hip_armor', 'hip_bones', 'hip_focus', 'hip_vent', 'hirschgeweih_antennas', 'hishaku', 'historical_connection',
-    'historical_name_connection', 'hitachi_magic_wand', 'hitodama', 'hitodama_print', 'hitting', 'ho-kago_tea_time', 'hockey_mask', 'hogtie',
-    'hogwarts_school_uniform', 'holding', 'holding_animal', 'holding_another\'s_arm', 'holding_another\'s_foot', 'holding_another\'s_hair', 'holding_another\'s_leg', 'holding_another\'s_tail',
-    'holding_another\'s_wrist', 'holding_arrow', 'holding_axe', 'holding_baby', 'holding_bag', 'holding_ball', 'holding_balloon', 'holding_barcode_scanner',
-    'holding_baseball_bat', 'holding_basket', 'holding_bass_guitar', 'holding_beachball', 'holding_behind_back', 'holding_bell', 'holding_binoculars', 'holding_bird',
-    'holding_blanket', 'holding_book', 'holding_bottle', 'holding_bouquet', 'holding_bow_(music)', 'holding_bow_(weapon)', 'holding_bowl', 'holding_box',
-    'holding_bra', 'holding_branch', 'holding_breath', 'holding_briefcase', 'holding_broom', 'holding_brush', 'holding_bucket', 'holding_burger',
-    'holding_butterfly_net', 'holding_cake', 'holding_camera', 'holding_can', 'holding_candle', 'holding_candy', 'holding_cane', 'holding_card',
-    'holding_carrot', 'holding_carton', 'holding_cat', 'holding_chain', 'holding_chainsaw', 'holding_chocolate', 'holding_chopsticks', 'holding_cigar',
-    'holding_cigarette', 'holding_clipboard', 'holding_club', 'holding_coin', 'holding_comb', 'holding_condom', 'holding_controller', 'holding_cotton_candy',
-    'holding_creature', 'holding_crepe', 'holding_cross', 'holding_crossbow', 'holding_crowbar', 'holding_cup', 'holding_dagger', 'holding_detached_head',
-    'holding_dog', 'holding_doll', 'holding_drink', 'holding_drumsticks', 'holding_duster', 'holding_egg', 'holding_envelope', 'holding_fan',
-    'holding_feather', 'holding_fireworks', 'holding_fish', 'holding_fishing_rod', 'holding_flag', 'holding_flashlight', 'holding_flask', 'holding_flower',
-    'holding_flower_pot', 'holding_flute', 'holding_food', 'holding_footwear', 'holding_fork', 'holding_fruit', 'holding_frying_pan', 'holding_game_controller',
-    'holding_gem', 'holding_gift', 'holding_glowstick', 'holding_gohei', 'holding_guitar', 'holding_gun', 'holding_hammer', 'holding_handcuffs',
-    'holding_handheld_game_console', 'holding_handkerchief', 'holding_hands', 'holding_hat', 'holding_heart', 'holding_helmet', 'holding_hose', 'holding_ice_cream',
-    'holding_ice_cream_cone', 'holding_instrument', 'holding_jacket', 'holding_jar', 'holding_jewelry', 'holding_key', 'holding_knife', 'holding_ladle',
-    'holding_lantern', 'holding_leaf', 'holding_leash', 'holding_leg', 'holding_legs', 'holding_letter', 'holding_lighter', 'holding_lightsaber',
-    'holding_lipstick_tube', 'holding_lollipop', 'holding_magnifying_glass', 'holding_mahjong_tile', 'holding_mallet', 'holding_map', 'holding_marker', 'holding_mask',
-    'holding_megaphone', 'holding_menu', 'holding_microphone', 'holding_microphone_stand', 'holding_milk_carton', 'holding_mirror', 'holding_money', 'holding_mop',
-    'holding_necklace', 'holding_necktie', 'holding_needle', 'holding_newspaper', 'holding_notebook', 'holding_notepad', 'holding_own_arm', 'holding_own_foot',
-    'holding_own_hair', 'holding_own_leg', 'holding_own_tail', 'holding_own_wrist', 'holding_paddle', 'holding_paintbrush', 'holding_palette', 'holding_panties',
-    'holding_paper', 'holding_pen', 'holding_pencil', 'holding_petal', 'holding_phone', 'holding_photo', 'holding_pickaxe', 'holding_pillow',
-    'holding_pizza', 'holding_plant', 'holding_plate', 'holding_plectrum', 'holding_pocket_watch', 'holding_pocky', 'holding_pointer', 'holding_poke_ball',
-    'holding_pokemon', 'holding_pole', 'holding_polearm', 'holding_pom_poms', 'holding_popsicle', 'holding_pregnancy_test', 'holding_pumpkin', 'holding_quill',
-    'holding_racket', 'holding_reins', 'holding_remote_control', 'holding_removed_eyewear', 'holding_ribbon', 'holding_riding_crop', 'holding_rope', 'holding_sack',
-    'holding_saucer', 'holding_scarf', 'holding_scepter', 'holding_scissors', 'holding_scroll', 'holding_scythe', 'holding_sex_toy', 'holding_sheath',
-    'holding_shield', 'holding_shirt', 'holding_shoes', 'holding_shovel', 'holding_shower_head', 'holding_sign', 'holding_sketchbook', 'holding_skewer',
-    'holding_skull', 'holding_smoking_pipe', 'holding_spatula', 'holding_spoon', 'holding_spring_onion', 'holding_staff', 'holding_star', 'holding_stick',
-    'holding_strap', 'holding_stuffed_toy', 'holding_stylus', 'holding_suitcase', 'holding_surfboard', 'holding_swim_ring', 'holding_swimsuit', 'holding_sword',
-    'holding_syringe', 'holding_tablet_pc', 'holding_teapot', 'holding_test_tube', 'holding_toothbrush', 'holding_torch', 'holding_torpedo', 'holding_towel',
-    'holding_toy', 'holding_tray', 'holding_trident', 'holding_umbrella', 'holding_underwear', 'holding_unworn_clothes', 'holding_vegetable', 'holding_violin',
-    'holding_wand', 'holding_water_gun', 'holding_watering_can', 'holding_watermelon', 'holding_weapon', 'holding_whip', 'holding_whisk', 'holding_whistle',
-    'holding_with_feet', 'holding_with_tail', 'holding_wrench', 'hole', 'hole_in_chest', 'hole_on_body', 'holed_coin', 'hollow_eyes',
-    'holly', 'holly_hair_ornament', 'holocouncil', 'hologram', 'holographic_clothing', 'holographic_interface', 'holographic_monitor', 'hololive_dance_practice_uniform',
-    'hololive_idol_uniform_(bright)', 'hololive_idol_uniform_(origin)', 'hololive_summer_2023_swimsuit', 'holomyth', 'holster', 'holstered', 'homu', 'homurabara_academy_school_uniform',
-    'honda', 'honey', 'honeycomb_(pattern)', 'honeycomb_background', 'hood', 'hood_down', 'hood_up', 'hooded_bodysuit',
-    'hooded_cape', 'hooded_capelet', 'hooded_cardigan', 'hooded_cloak', 'hooded_coat', 'hooded_dress', 'hooded_jacket', 'hooded_robe',
-    'hooded_shirt', 'hooded_sweater', 'hooded_track_jacket', 'hooded_vest', 'hoodie', 'hoodie_lift', 'hook', 'hook_hand',
-    'hoop', 'hoop_earrings', 'hooves', 'hope\'s_peak_academy_school_uniform', 'horizon', 'horizontal-striped_thighhighs', 'horizontal_pupils', 'horn_(instrument)',
-    'horn_bow', 'horn_flower', 'horn_grab', 'horn_hairband', 'horn_ornament', 'horn_ribbon', 'horn_ring', 'horned_hat',
-    'horned_headwear', 'horned_helmet', 'horned_hood', 'horned_mask', 'horns', 'horns_pose', 'horns_through_headwear', 'horrified',
-    'horror_(theme)', 'horse', 'horse_boy', 'horse_ears', 'horse_girl', 'horse_penis', 'horse_tail', 'horseback_riding',
-    'horseshoe', 'horseshoe_ornament', 'hose', 'hoshi_no_tsue', 'hospital', 'hospital_bed', 'hospital_gown', 'hot',
-    'hot_air_balloon', 'hot_dog', 'houndstooth', 'hourglass', 'house', 'housewife', 'how_to', 'hoyofair',
-    'hug', 'hug_from_behind', 'huge_ahoge', 'huge_ass', 'huge_bow', 'huge_breasts', 'huge_dildo', 'huge_eyebrows',
-    'huge_horns', 'huge_moon', 'huge_nipples', 'huge_pectorals', 'huge_penis', 'huge_testicles', 'huge_weapon', 'hugging_another\'s_leg',
-    'hugging_book', 'hugging_doll', 'hugging_object', 'hugging_own_legs', 'hugging_own_tail', 'hugging_tail', 'human_furniture', 'human_scabbard',
-    'humanization', 'humanoid_robot', 'hume', 'humiliation', 'humping', 'hunched_over', 'hungry', 'husband_and_wife',
-    'hyakkaou_academy_school_uniform', 'hydrangea', 'hydrokinesis', 'hyena_boy', 'hyena_ears', 'hylian_shield', 'hypnosis', 'hyur',
-    'ice', 'ice_cream', 'ice_cream_cone', 'ice_cream_cup', 'ice_cream_float', 'ice_crystal', 'ice_cube', 'ice_skates',
-    'ice_wings', 'icho_private_high_school_uniform', 'icicle', 'icing', 'id_card', 'idol', 'idol_clothes', 'iei',
-    'if_they_mated', 'igote', 'ikea_shark', 'imagining', 'imitating', 'imminent_anal', 'imminent_fellatio', 'imminent_hug',
-    'imminent_kiss', 'imminent_penetration', 'imminent_rape', 'imminent_vaginal', 'immobilization', 'impaled', 'imperial_japanese_army', 'imperial_japanese_navy',
-    'implied_after_sex', 'implied_cunnilingus', 'implied_extra_ears', 'implied_fellatio', 'implied_fingering', 'implied_futanari', 'implied_kiss', 'implied_masturbation',
-    'implied_paizuri', 'implied_pantyshot', 'implied_pregnancy', 'implied_sex', 'implied_yaoi', 'implied_yuri', 'impossible_bodysuit', 'impossible_clothes',
-    'impossible_dress', 'impossible_leotard', 'impossible_shirt', 'impossible_sweater', 'impossible_swimsuit', 'impregnation', 'improvised_gag', 'in-franchise_crossover',
-    'in-universe_location', 'in_bowl', 'in_box', 'in_bucket', 'in_container', 'in_cup', 'in_food', 'in_heat',
-    'in_orbit', 'in_palm', 'in_the_face', 'in_tree', 'in_water', 'incense', 'incest', 'incoming_attack',
-    'incoming_drink', 'incoming_food', 'incoming_gift', 'incoming_hug', 'incoming_kiss', 'incoming_punch', 'inconvenient_breasts', 'index_finger_raised',
-    'index_fingers_raised', 'index_fingers_together', 'indian_clothes', 'indian_style', 'indoors', 'industrial_piercing', 'industrial_pipe', 'infection_monitor_(arknights)',
-    'infinity_symbol', 'infirmary', 'inflatable_raft', 'inflatable_toy', 'inflatable_whale', 'inflation', 'injury', 'ink',
-    'ink_tank_(splatoon)', 'inkling', 'inkling_(language)', 'inktober', 'inkwell', 'inline_skates', 'inner_senshi', 'innertube',
-    'insect_wings', 'inseki', 'inset', 'inset_border', 'insignia', 'instagram_logo', 'instagram_username', 'instant_loss',
-    'instrument', 'instrument_case', 'instrument_on_back', 'interface_headset', 'interior', 'interlocked_fingers', 'internal_cumshot', 'interracial',
-    'interspecies', 'intertwined_tails', 'interview', 'intestines', 'intravenous_drip', 'inverted_bob', 'inverted_cross', 'inverted_nipples',
-    'invisible', 'invisible_chair', 'invisible_floor', 'invisible_man', 'invisible_penis', 'ipad', 'iphone', 'ipod',
-    'ips_cells', 'iridescent', 'iris_(flower)', 'iron_blood_(emblem)', 'iron_cross', 'irrumatio', 'is_that_so', 'ishikei_(style)',
-    'island', 'isometric', 'italian_flag', 'italian_text', 'itan_private_high_school_uniform', 'iv_stand', 'ivy', 'jack-o\'-lantern',
-    'jack-o\'-lantern_hair_ornament', 'jack-o\'_challenge', 'jackal_boy', 'jackal_ears', 'jacket', 'jacket_around_waist', 'jacket_lift', 'jacket_on_shoulders',
-    'jacket_over_shoulder', 'jacket_over_swimsuit', 'jacket_partially_removed', 'jacket_pull', 'jaggy_lines', 'jaguar_ears', 'jaguar_girl', 'jaguar_print',
-    'jaguar_tail', 'jam', 'japan', 'japan_national_police', 'japan_self-defense_force', 'japanese_armor', 'japanese_clothes', 'japanese_flag',
-    'japari_bun', 'japari_symbol', 'jar', 'jealous', 'jeans', 'jellyfish', 'jersey', 'jersey_maid',
-    'jester', 'jester_cap', 'jetpack', 'jewel_under_eye', 'jeweled_branch_of_hourai', 'jewelry', 'jiangshi', 'jiangshi_costume',
-    'jiaozi', 'jimiko', 'jingasa', 'jingle_bell', 'jirai_kei', 'jitome', 'jockstrap', 'joestar_birthmark',
-    'joints', 'jojo_pose', 'joker_(playing_card)', 'jolly_roger', 'josou_seme', 'joy-con', 'joystick', 'judgement_armband_(toaru)',
-    'jug_(bottle)', 'juice', 'juice_box', 'jujutsu_tech_uniform', 'juliet_sleeves', 'jump_rope', 'jumping', 'jumpsuit',
-    'jungle', 'just_shoes', 'just_the_tip', 'juxtaposition', 'k-pop', 'k/da_(league_of_legends)', 'kabedon', 'kabuto_(helmet)',
-    'kadomatsu', 'kafuu_chino\'s_school_uniform', 'kagami_mochi', 'kagura_suzu', 'kaiju', 'kalashnikov_rifle', 'kaleidostick', 'kamaboko',
-    'kamihama_university_affiliated_school_uniform', 'kamina_shades', 'kamisato_clan_(emblem)', 'kamiyama_high_school_uniform_(hyouka)', 'kamiyama_high_school_uniform_(project_sekai)', 'kanabou', 'kaname-ishi', 'kaname_madoka_(cosplay)',
-    'kanba_girls_high_school_uniform', 'kansaiben', 'kanshou_&_bakuya_(fate)', 'kantele', 'kanzashi', 'kappa', 'kappougi', 'karakasa_obake',
-    'karaoke', 'karate_gi', 'kariginu', 'kariyushi_shirt', 'kataginu', 'katana', 'kayari_buta', 'kazamatsuri_institute_high_school_uniform',
-    'kebab', 'keep_out', 'keizoku_military_uniform', 'keizoku_school_uniform', 'kemonomimi_mode', 'kepi', 'kerchief', 'kesa',
-    'kessoku_band', 'ketchup', 'ketchup_bottle', 'kettle', 'key', 'key_necklace', 'keyblade', 'keyboard_(instrument)',
-    'keyhole', 'keyring', 'kibina_high_school_uniform', 'kibito_high_school_uniform', 'kickboard', 'kicking', 'kigurumi', 'kikkoumon',
-    'kikumon', 'kimono', 'kimono_lift', 'kimono_pull', 'kimono_skirt', 'kinchaku', 'kindergarten', 'kindergarten_bag',
-    'kindergarten_uniform', 'kine', 'king_(chess)', 'kirin_(armor)', 'kirisame_marisa_(cosplay)', 'kiseru', 'kishimen_hair', 'kiss',
-    'kissing_cheek', 'kissing_forehead', 'kissing_hand', 'kissing_neck', 'kissing_penis', 'kita_high_school_uniform', 'kitauji_high_school_uniform', 'kitchen',
-    'kitchen_knife', 'kite', 'kitsune', 'kitten', 'kittysuit', 'kiwi_(fruit)', 'kiwi_slice', 'kiyosumi_school_uniform',
-    'knee_boots', 'knee_pads', 'knee_up', 'kneehighs', 'kneeless_mermaid', 'kneeling', 'kneepits', 'knees',
-    'knees_apart_feet_together', 'knees_out_of_frame', 'knees_to_chest', 'knees_together_feet_apart', 'knees_up', 'knife', 'knife_sheath', 'knight',
-    'knight_(chess)', 'knit_hat', 'knitting', 'knives_between_fingers', 'knotted_penis', 'kobeya_uniform', 'kodomo_doushi', 'kogal',
-    'koi', 'koinobori', 'koishi_day', 'komainu_ears', 'kono_lolicon_domome', 'konohagakure_shinobi_uniform', 'konohagakure_symbol', 'korean_clothes',
-    'korean_text', 'kotatsu', 'kote', 'kotoyoro', 'kouhaku_nawa', 'kourindou_tengu_costume', 'kousaka_kirino\'s_school_uniform', 'kriss_vector',
-    'kuji-in', 'kunai', 'kung_fu', 'kupaa', 'kurokote', 'kuromorimine_military_uniform', 'kuromorimine_school_uniform', 'kusazuri',
-    'kyuubi', 'kyuudou', 'la_grondement_du_haine', 'lab_coat', 'laboratory', 'labret_piercing', 'lace', 'lace-trimmed_bra',
-    'lace-trimmed_choker', 'lace-trimmed_collar', 'lace-trimmed_dress', 'lace-trimmed_gloves', 'lace-trimmed_hairband', 'lace-trimmed_headwear', 'lace-trimmed_legwear', 'lace-trimmed_panties',
-    'lace-trimmed_shirt', 'lace-trimmed_skirt', 'lace-trimmed_sleeves', 'lace-trimmed_thighhighs', 'lace-up_boots', 'lace_background', 'lace_border', 'lace_bra',
-    'lace_choker', 'lace_gloves', 'lace_panties', 'lace_sleeves', 'lace_trim', 'lactation', 'lactation_through_clothes', 'ladder',
-    'ladle', 'ladybug', 'laevatein_(touhou)', 'lake', 'lalafell', 'lamia', 'lamp', 'lamppost',
-    'lampshade', 'lance', 'lance_of_longinus_(evangelion)', 'landscape', 'lane_line', 'lantern', 'lanyard', 'lap_pillow',
-    'lap_pillow_invitation', 'lapel_pin', 'lapels', 'laptop', 'large_areolae', 'large_bow', 'large_breasts', 'large_ears',
-    'large_hands', 'large_hat', 'large_horns', 'large_insertion', 'large_pectorals', 'large_penis', 'large_syringe', 'large_tail',
-    'large_testicles', 'large_wings', 'laser', 'laser_sight', 'latex', 'latex_bodysuit', 'latex_boots', 'latex_gloves',
-    'latex_legwear', 'latex_leotard', 'latex_thighhighs', 'latin_cross', 'lattice', 'laughing', 'laundry', 'laundry_basket',
-    'laurel_crown', 'lava', 'lavender_(flower)', 'layered_bikini', 'layered_clothes', 'layered_dress', 'layered_gloves', 'layered_kimono',
-    'layered_shirt', 'layered_skirt', 'layered_sleeves', 'lazy_eye', 'lead_pipe', 'leaf', 'leaf_background', 'leaf_hair_ornament',
-    'leaf_hat_ornament', 'leaf_on_head', 'leaf_print', 'leaf_umbrella', 'leaning', 'leaning_back', 'leaning_forward', 'leaning_on_object',
-    'leaning_on_person', 'leaning_on_table', 'leaning_to_the_side', 'leash', 'leash_pull', 'leather', 'leather_armor', 'leather_belt',
-    'leather_boots', 'leather_gloves', 'leather_jacket', 'leather_pants', 'left-handed', 'left-to-right_manga', 'leg_armor', 'leg_belt',
-    'leg_between_thighs', 'leg_cutout', 'leg_grab', 'leg_hair', 'leg_hold', 'leg_lift', 'leg_lock', 'leg_ribbon',
-    'leg_tattoo', 'leg_up', 'leg_warmers', 'leg_wrap', 'legband', 'leggings', 'leggings_under_shorts', 'legs',
-    'legs_apart', 'legs_folded', 'legs_over_head', 'legs_together', 'legs_up', 'legwear_garter', 'lei', 'lemon',
-    'lemon_print', 'lemon_slice', 'lens_flare', 'leopard_boy', 'leopard_ears', 'leopard_girl', 'leopard_print', 'leopard_tail',
-    'leotard', 'leotard_aside', 'leotard_peek', 'leotard_pull', 'leotard_under_clothes', 'letter', 'letter_hair_ornament', 'letterboxed',
-    'letterman_jacket', 'lettuce', 'levitation', 'lgbt_pride', 'library', 'license_plate', 'licking', 'licking_another\'s_cheek',
-    'licking_another\'s_face', 'licking_another\'s_neck', 'licking_armpit', 'licking_breast', 'licking_ear', 'licking_finger', 'licking_foot', 'licking_lips',
-    'licking_nipple', 'licking_penis', 'licking_testicle', 'lifebuoy', 'lifebuoy_ornament', 'lifeguard', 'lifted_by_tail', 'lifting_another\'s_clothes',
-    'lifting_own_clothes', 'lifting_person', 'light_areolae', 'light_blue_hair', 'light_blush', 'light_bulb', 'light_censor', 'light_frown',
-    'light_machine_gun', 'light_particles', 'light_rays', 'light_smile', 'light_trail', 'lighter', 'lighthouse', 'lighting_cigarette',
-    'lightning', 'lightning_bolt_hair_ornament', 'lightning_bolt_print', 'lightning_bolt_symbol', 'lightsaber', 'ligne_claire', 'like_and_retweet', 'lillian_girls\'_academy_school_uniform',
-    'lily_(flower)', 'lily_of_the_valley', 'lily_pad', 'lime_(fruit)', 'lime_slice', 'limited_palette', 'limiter_(tsukumo_sana)', 'linea_alba',
-    'linear_hatching', 'lineart', 'lineup', 'lingerie', 'linked_piercing', 'lion', 'lion_boy', 'lion_ears',
-    'lion_girl', 'lion_tail', 'lip_piercing', 'lipgloss', 'lips', 'lipstick', 'lipstick_mark', 'lipstick_mark_on_face',
-    'lipstick_mark_on_penis', 'lipstick_ring', 'lipstick_tube', 'liquid', 'liquid_hair', 'liquid_halo', 'liquor', 'listen!!',
-    'listening_to_music', 'little_busters!_school_uniform', 'little_red_riding_hood_(grimm)_(cosplay)', 'livestream', 'living_clothes', 'living_hair', 'living_room', 'lizard',
-    'lizard_tail', 'load_bearing_equipment', 'load_bearing_vest', 'loaded_interior', 'loafers', 'lobster', 'lock', 'locked_arms',
-    'locker', 'locker_room', 'locomotive', 'log', 'log_pose', 'logo', 'logo_parody', 'loincloth',
-    'loli', 'lolidom', 'lolita_fashion', 'lolita_hairband', 'lollipop', 'lone_nape_hair', 'lonely', 'long_arms',
-    'long_bangs', 'long_beard', 'long_braid', 'long_coat', 'long_dress', 'long_earlobes', 'long_eyebrows', 'long_eyelashes',
-    'long_fingernails', 'long_fingers', 'long_hair', 'long_hair_between_eyes', 'long_hoodie', 'long_horns', 'long_labia', 'long_legs',
-    'long_mustache', 'long_neck', 'long_nose', 'long_pointy_ears', 'long_ribbon', 'long_scarf', 'long_shirt', 'long_sideburns',
-    'long_sidelocks', 'long_skirt', 'long_sleeves', 'long_tail', 'long_toenails', 'long_tongue', 'longcat_(meme)', 'look-alike',
-    'looking_afar', 'looking_ahead', 'looking_at_animal', 'looking_at_another', 'looking_at_breasts', 'looking_at_food', 'looking_at_hand', 'looking_at_mirror',
-    'looking_at_object', 'looking_at_penis', 'looking_at_phone', 'looking_at_viewer', 'looking_back', 'looking_down', 'looking_outside', 'looking_over_eyewear',
-    'looking_through_own_legs', 'looking_to_the_side', 'looking_up', 'loose_belt', 'loose_bowtie', 'loose_clothes', 'loose_hair_strand', 'loose_necktie',
-    'loose_shirt', 'loose_socks', 'loose_thighhigh', 'lop_rabbit_ears', 'lord_camelot_(fate)', 'lotion', 'lotion_bottle', 'lotus',
-    'lotus_leaf', 'lounge_chair', 'loungewear', 'love_letter', 'loving_aura', 'low-braided_long_hair', 'low-cut', 'low-cut_armhole',
-    'low-tied_long_hair', 'low-tied_sidelocks', 'low_neckline', 'low_poly', 'low_ponytail', 'low_twin_braids', 'low_twintails', 'low_wings',
-    'lower_body', 'lower_teeth_only', 'lowleg', 'lowleg_bikini', 'lowleg_panties', 'lowleg_pants', 'lowleg_shorts', 'lowleg_skirt',
-    'lube', 'lum_(cosplay)', 'luminosite_eternelle', 'luna_nova_school_uniform', 'lunchbox', 'lute_(instrument)', 'lycoris_uniform', 'lying',
-    'lying_on_lap', 'lying_on_person', 'lying_on_water', 'lyre', 'lyrics', 'm16', 'm16a1', 'm1911',
-    'm4_carbine', 'm_legs', 'macaron', 'mace', 'machine', 'machine_gun', 'machinery', 'madoka_runes',
-    'maebari', 'magatama', 'magatama_earrings', 'magatama_hair_ornament', 'magatama_necklace', 'magazine_(object)', 'magazine_(weapon)', 'magazine_cover',
-    'mage_staff', 'magic', 'magic_circle', 'magical_boy', 'magical_girl', 'magical_musket', 'magician', 'magnet',
-    'magnifying_glass', 'mahjong', 'mahjong_tile', 'maid', 'maid_apron', 'maid_bikini', 'maid_day', 'maid_headdress',
-    'mailbox_(incoming_mail)', 'makeup', 'makeup_brush', 'makizushi', 'male_focus', 'male_maid', 'male_masturbation', 'male_on_futa',
-    'male_penetrated', 'male_playboy_bunny', 'male_pubic_hair', 'male_swimwear', 'male_underwear', 'male_underwear_peek', 'male_underwear_pull', 'mallet',
-    'mamemaki', 'mami_mogu_mogu', 'manboobs', 'mandarin_collar', 'mandarin_orange', 'mane', 'maneki-neko', 'manga_(object)',
-    'manga_cover', 'manly', 'mannequin', 'mansion', 'manta_ray', 'map', 'map_(object)', 'maple_leaf',
-    'maple_leaf_print', 'maracas', 'maria_the_ripper', 'marionette', 'mark_under_both_eyes', 'marker', 'market', 'market_stall',
-    'marking_on_cheek', 'markings', 'marriage_proposal', 'mars_symbol', 'marshmallow', 'martial_arts', 'martial_arts_belt', 'mary_janes',
-    'mascara', 'mascot', 'mascot_costume', 'mash_kyrielight_(dangerous_beast)_(cosplay)', 'mask', 'mask_around_neck', 'mask_lift', 'mask_on_head',
-    'mask_over_one_eye', 'mask_pull', 'masked', 'masochism', 'masquerade_mask', 'massage', 'mast', 'master_sword',
-    'masturbation', 'masturbation_through_clothes', 'masu', 'mat', 'matching_outfits', 'materia', 'material_growth', 'math',
-    'mating_press', 'mature_female', 'mature_male', 'mauser_98', 'mayonnaise', 'mazda', 'meadow', 'meandros',
-    'measurements', 'measuring', 'meat', 'mecha', 'mecha_focus', 'mecha_musume', 'mecha_pilot_suit', 'mechabare',
-    'mechanic', 'mechanical_arms', 'mechanical_ears', 'mechanical_eye', 'mechanical_halo', 'mechanical_hands', 'mechanical_horns', 'mechanical_legs',
-    'mechanical_pencil', 'mechanical_tail', 'mechanical_wings', 'mechanization', 'medal', 'medallion', 'median_furrow', 'medical_eyepatch',
-    'medicine', 'medieval', 'medium_breasts', 'medium_dress', 'medium_hair', 'medium_sideburns', 'medium_skirt', 'mega_pokemon',
-    'megaphone', 'megurigaoka_high_school_uniform', 'meiji_schoolgirl_uniform', 'meka_(overwatch)', 'melon', 'melon_bread', 'melon_soda', 'melting',
-    'melting_halo', 'meme', 'meme_attire', 'menacing_(jojo)', 'menu', 'menu_board', 'merchandise', 'mermaid',
-    'merman', 'merry_christmas', 'messenger_bag', 'messy', 'messy_hair', 'messy_room', 'mesugaki', 'meta',
-    'metal_baseball_bat', 'metal_collar', 'metal_gloves', 'metal_hairband', 'metal_skin', 'metamoran_vest', 'meteor', 'meteor_shower',
-    'mexico', 'mg42', 'micro_bikini', 'micro_bra', 'micro_panties', 'micro_shorts', 'microdress', 'microphone',
-    'microphone_stand', 'microskirt', 'microwave', 'midair', 'middle_finger', 'middle_ring', 'midriff', 'midriff_peek',
-    'midriff_sarashi', 'miko', 'miku_day', 'milestone_celebration', 'military', 'military_combat_uniform', 'military_dress_uniform', 'military_hat',
-    'military_jacket', 'military_operator', 'military_uniform', 'military_vehicle', 'milk', 'milk_bottle', 'milk_carton', 'milking_machine',
-    'milkshake', 'milky_way', 'millennium_cheerleader_outfit_(blue_archive)', 'millennium_puzzle', 'mimic', 'mimic_chest', 'mimikaki', 'mind_control',
-    'mini-hakkero', 'mini_crown', 'mini_hat', 'mini_person', 'mini_top_hat', 'mini_wings', 'mini_witch_hat', 'miniboy',
-    'minigirl', 'minigun', 'minimap', 'miniskirt', 'minotaur', 'mint', 'miqo\'te', 'mira-cra_park!',
-    'miracle_mallet', 'mirror', 'mismatched_bikini', 'mismatched_earrings', 'mismatched_eyebrows', 'mismatched_eyelashes', 'mismatched_footwear', 'mismatched_gloves',
-    'mismatched_legwear', 'mismatched_pubic_hair', 'mismatched_pupils', 'mismatched_sclera', 'mismatched_sleeves', 'mismatched_wings', 'missile', 'missile_pod',
-    'missing_eye', 'missing_limb', 'missing_tooth', 'missionary', 'mistletoe', 'misunderstanding', 'mitakihara_school_uniform', 'mithra_(ff11)',
-    'mitre', 'mitsudomoe_(shape)', 'mittens', 'mixed-language_text', 'mixed-sex_bathing', 'mixing_bowl', 'miyamasuzaka_girls\'_academy_school_uniform', 'mizu_happi',
-    'mmf_threesome', 'mmm_threesome', 'moaning', 'mob_cap', 'mobile_suit', 'mochi', 'mochi_trail', 'model_kit',
-    'moe_moe_kyun!', 'moegi_high_school_uniform', 'mohawk', 'mole', 'mole_above_eye', 'mole_above_mouth', 'mole_on_arm', 'mole_on_armpit',
-    'mole_on_ass', 'mole_on_breast', 'mole_on_cheek', 'mole_on_collarbone', 'mole_on_neck', 'mole_on_pussy', 'mole_on_shoulder', 'mole_on_stomach',
-    'mole_on_thigh', 'mole_under_each_eye', 'mole_under_eye', 'mole_under_mouth', 'molestation', 'money', 'monitor', 'monk',
-    'monkey', 'monkey_boy', 'monkey_ears', 'monkey_girl', 'monkey_tail', 'monochrome', 'monochrome_background', 'monocle',
-    'monocle_chain', 'monster', 'monster_boy', 'monster_energy', 'monster_focus', 'monster_girl', 'monsterification', 'moon',
-    'moon_(ornament)', 'moon_phases', 'moonlight', 'moose_ears', 'mop', 'morning', 'morning_glory', 'morning_glory_print',
-    'morrigan_aensland_(cosplay)', 'mortarboard', 'mosaic_censoring', 'mosin-nagant', 'moss', 'moth', 'moth_girl', 'moth_wings',
-    'mother\'s_day', 'mother_and_daughter', 'mother_and_son', 'motherly', 'motion_blur', 'motion_lines', 'motor_vehicle', 'motorcycle',
-    'motorcycle_helmet', 'motosu_school_uniform', 'motoyui', 'mount_fuji', 'mountain', 'mountainous_horizon', 'mouse_(animal)', 'mouse_ears',
-    'mouse_girl', 'mouse_tail', 'mousepad_(medium)', 'mousepad_(object)', 'mousetrap', 'mouth_drool', 'mouth_hold', 'mouth_mask',
-    'mouth_piercing', 'mouth_pull', 'mouth_veil', 'movie_poster', 'movie_theater', 'mtu_virus', 'mud', 'mudra',
-    'muffin', 'muffin_top', 'mug', 'mugshot', 'mukyuu', 'mullet', 'multi-strapped_bikini_bottom', 'multi-strapped_bikini_top',
-    'multi-strapped_panties', 'multi-tied_hair', 'multicolored_background', 'multicolored_bikini', 'multicolored_bodysuit', 'multicolored_bow', 'multicolored_bowtie', 'multicolored_cape',
-    'multicolored_clothes', 'multicolored_coat', 'multicolored_dress', 'multicolored_eyes', 'multicolored_flower', 'multicolored_footwear', 'multicolored_fur', 'multicolored_gloves',
-    'multicolored_hair', 'multicolored_hairband', 'multicolored_halo', 'multicolored_hat', 'multicolored_hoodie', 'multicolored_horns', 'multicolored_jacket', 'multicolored_kimono',
-    'multicolored_leotard', 'multicolored_nails', 'multicolored_necktie', 'multicolored_pants', 'multicolored_ribbon', 'multicolored_scarf', 'multicolored_shirt', 'multicolored_shorts',
-    'multicolored_skin', 'multicolored_skirt', 'multicolored_sky', 'multicolored_stripes', 'multicolored_swimsuit', 'multicolored_tail', 'multicolored_wings', 'multiple_4koma',
-    'multiple_anal', 'multiple_belts', 'multiple_boys', 'multiple_bracelets', 'multiple_braids', 'multiple_condoms', 'multiple_crossover', 'multiple_drawing_challenge',
-    'multiple_earrings', 'multiple_girls', 'multiple_hair_bows', 'multiple_hairpins', 'multiple_hands', 'multiple_heads', 'multiple_horns', 'multiple_legs',
-    'multiple_moles', 'multiple_monitors', 'multiple_monochrome', 'multiple_necklaces', 'multiple_others', 'multiple_persona', 'multiple_piercings', 'multiple_riders',
-    'multiple_rings', 'multiple_scars', 'multiple_swords', 'multiple_tails', 'multiple_torii', 'multiple_unit_train', 'multiple_views', 'multiple_weapons',
-    'multiple_wings', 'multitasking', 'mummy', 'mummy_costume', 'mundane_utility', 'muneate', 'murder', 'muscular',
-    'muscular_female', 'muscular_male', 'mushroom', 'music', 'musical_note', 'musical_note_hair_ornament', 'musical_note_print', 'musket',
-    'musou_isshin_(genshin_impact)', 'mustache', 'mustache_stubble', 'muted_color', 'mutton_chops', 'mutual_hug', 'mutual_masturbation', 'mutual_orgasm',
-    'muzzle_(mask)', 'muzzle_flash', 'myrtenaster', 'naginata', 'nail_(hardware)', 'nail_art', 'nail_bat', 'nail_polish',
-    'nail_polish_bottle', 'naizuri', 'naked_apron', 'naked_bandage', 'naked_cape', 'naked_capelet', 'naked_chocolate', 'naked_cloak',
-    'naked_coat', 'naked_hoodie', 'naked_jacket', 'naked_kimono', 'naked_necktie', 'naked_overalls', 'naked_paint', 'naked_ribbon',
-    'naked_scarf', 'naked_sheet', 'naked_shirt', 'naked_sweater', 'naked_tabard', 'naked_towel', 'name_connection', 'name_tag',
-    'nameless_dagger_(fate)', 'nami_junior_high_school_uniform', 'nanairogaoka_middle_school_uniform', 'nanamori_school_uniform', 'nanodesu_(phrase)', 'naoetsu_high_school_uniform', 'nape', 'napkin',
-    'naranja_academy_school_uniform', 'narration', 'narrow_waist', 'narrowed_eyes', 'narutomaki', 'nata_(tool)', 'national_shin_ooshima_school_uniform', 'native_american',
-    'natsuiro_egao_de_1_2_jump!', 'nature', 'naughty_face', 'naval_uniform', 'navel', 'navel_cutout', 'navel_hair', 'navel_piercing',
-    'nazi', 'nearly_naked_apron', 'nebula', 'neck', 'neck_bell', 'neck_flower', 'neck_fur', 'neck_garter',
-    'neck_grab', 'neck_ribbon', 'neck_ring', 'neck_ruff', 'neck_tassel', 'neck_tattoo', 'neckerchief', 'necklace',
-    'necktie', 'necktie_between_breasts', 'necktie_grab', 'neckwear_grab', 'needle', 'negative_space', 'negligee', 'nejiri_hachimaki',
-    'nekomata', 'nemophila_(flower)', 'nengajou', 'neon_lights', 'neon_palette', 'neon_trim', 'nerv', 'nervous',
-    'nervous_smile', 'nervous_sweating', 'nesoberi', 'net', 'neta', 'netnavi', 'netorare', 'new_school_swimsuit',
-    'new_year', 'newspaper', 'nib_pen_(object)', 'nico_nico_nii', 'night', 'night_raven_college_uniform', 'night_sky', 'night_vision_device',
-    'nightcap', 'nightgown', 'nightstand', 'nigirizushi', 'nihonga', 'nihongami', 'nijigasaki_school_uniform', 'nike_(company)',
-    'ninja', 'ninja_mask', 'nintendo_3ds', 'nintendo_ds', 'nintendo_switch', 'nipple-to-nipple', 'nipple_bar', 'nipple_chain',
-    'nipple_clamps', 'nipple_cutout', 'nipple_jewelry', 'nipple_penetration', 'nipple_piercing', 'nipple_pull', 'nipple_rings', 'nipple_rub',
-    'nipple_slip', 'nipple_stimulation', 'nipple_tweak', 'nippleless_clothes', 'nipples', 'nissan', 'nissin_cup_noodle', 'no_blindfold',
-    'no_bra', 'no_eyebrows', 'no_eyepatch', 'no_eyes', 'no_eyewear', 'no_feet', 'no_gloves', 'no_hair_ornament',
-    'no_halo', 'no_headwear', 'no_humans', 'no_jacket', 'no_legwear', 'no_lineart', 'no_mask', 'no_mole',
-    'no_mouth', 'no_nipples', 'no_nose', 'no_panties', 'no_pants', 'no_pupils', 'no_pussy', 'no_sclera',
-    'no_shirt', 'no_shoes', 'no_socks', 'no_symbol', 'no_tail', 'no_testicles', 'no_wings', 'noctchill_(idolmaster)',
-    'noh_mask', 'non-humanoid_robot', 'nontraditional_miko', 'nontraditional_playboy_bunny', 'noodles', 'noose', 'noren', 'nori_(seaweed)',
-    'normal_suit', 'nose', 'nose_blush', 'nose_bubble', 'nose_piercing', 'nose_ring', 'nosebleed', 'noses_touching',
-    'nostrils', 'notched_ear', 'notched_lapels', 'note', 'notebook', 'notepad', 'notice_lines', 'novel_cover',
-    'novelty_censor', 'nude', 'nude_cover', 'nudist', 'nudist_beach_uniform', 'number_print', 'number_pun', 'number_tattoo',
-    'numbered', 'numbers_(nanoha)', 'nun', 'nunchaku', 'nurse', 'nurse_cap', 'nursing_handjob', 'nuzzle',
-    'nyan', 'o-ring', 'o-ring_belt', 'o-ring_bikini', 'o-ring_bottom', 'o-ring_choker', 'o-ring_harness', 'o-ring_panties',
-    'o-ring_swimsuit', 'o-ring_thigh_strap', 'o-ring_top', 'o3o', 'o_o', 'oar', 'obese', 'obi',
-    'obiage', 'obidome', 'obijime', 'object_floating_above_hand', 'object_focus', 'object_head', 'object_in_clothes', 'object_in_pocket',
-    'object_insertion', 'object_namesake', 'object_on_breast', 'object_on_head', 'object_through_head', 'objectification', 'obliques', 'ocarina',
-    'ocean', 'octoling', 'octopus', 'oda_uri', 'odaiba_girls_high_school_uniform', 'odd_one_out', 'oden', 'oekaki',
-    'off-shoulder_bikini', 'off-shoulder_dress', 'off-shoulder_jacket', 'off-shoulder_one-piece_swimsuit', 'off-shoulder_shirt', 'off-shoulder_sweater', 'off_shoulder', 'offering_hand',
-    'office', 'office_chair', 'office_lady', 'official_alternate_color', 'official_alternate_costume', 'official_alternate_eye_color', 'official_alternate_hair_color', 'official_alternate_hair_length',
-    'official_alternate_hairstyle', 'official_art_inset', 'official_style', 'ofuda', 'ofuda_between_fingers', 'ofuda_on_clothes', 'ofuda_on_head', 'oil-paper_umbrella',
-    'oil_lamp', 'ojou-sama_pose', 'ok_sign', 'okobo', 'old', 'old_man', 'old_school_swimsuit', 'old_woman',
-    'omelet', 'omikuji', 'omurice', 'on_back', 'on_bed', 'on_bench', 'on_boat', 'on_box',
-    'on_car', 'on_chair', 'on_couch', 'on_crescent', 'on_desk', 'on_floor', 'on_grass', 'on_ground',
-    'on_head', 'on_innertube', 'on_lap', 'on_motorcycle', 'on_one_knee', 'on_person', 'on_railing', 'on_rock',
-    'on_roof', 'on_scooter', 'on_shoulder', 'on_side', 'on_stomach', 'on_stool', 'on_table', 'on_tank',
-    'on_water', 'onbashira', 'one-eyed', 'one-hour_drawing_challenge', 'one-piece_swimsuit', 'one-piece_swimsuit_pull', 'one-piece_tan', 'one-piece_thong',
-    'one_arm_handstand', 'one_breast_out', 'one_eye_closed', 'one_eye_covered', 'one_side_up', 'onee-loli', 'onee-shota', 'onesie',
-    'oni', 'oni_mask', 'onigiri', 'onigiri_print', 'onii-shota', 'onion', 'onmyouji', 'onsen',
-    'ooarai_(emblem)', 'ooarai_military_uniform', 'ooarai_school_uniform', 'oohashi_high_school_uniform', 'oonusa', 'ootachi', 'opaque_glasses', 'open-chest_sweater',
-    'open_belt', 'open_bodysuit', 'open_book', 'open_bra', 'open_cardigan', 'open_clothes', 'open_coat', 'open_collar',
-    'open_door', 'open_dress', 'open_fly', 'open_hand', 'open_hands', 'open_hoodie', 'open_jacket', 'open_kimono',
-    'open_mouth', 'open_pants', 'open_robe', 'open_shirt', 'open_shorts', 'open_skirt', 'open_vest', 'open_window',
-    'opened_by_self', 'opening_door', 'oppai_loli', 'optical_sight', 'oral', 'oral_invitation', 'oran_berry', 'orange-framed_eyewear',
-    'orange-tinted_eyewear', 'orange_(fruit)', 'orange_apron', 'orange_ascot', 'orange_background', 'orange_bandana', 'orange_belt', 'orange_bikini',
-    'orange_bodysuit', 'orange_border', 'orange_bow', 'orange_bowtie', 'orange_bra', 'orange_cape', 'orange_cat', 'orange_choker',
-    'orange_coat', 'orange_dress', 'orange_eyes', 'orange_eyeshadow', 'orange_flower', 'orange_footwear', 'orange_fur', 'orange_gemstone',
-    'orange_gloves', 'orange_goggles', 'orange_hair', 'orange_hairband', 'orange_halo', 'orange_hat', 'orange_headband', 'orange_hoodie',
-    'orange_horns', 'orange_jacket', 'orange_juice', 'orange_jumpsuit', 'orange_kimono', 'orange_leotard', 'orange_nails', 'orange_neckerchief',
-    'orange_necktie', 'orange_panties', 'orange_pants', 'orange_pantyhose', 'orange_planet_uniform', 'orange_pupils', 'orange_ribbon', 'orange_rose',
-    'orange_sailor_collar', 'orange_scarf', 'orange_sclera', 'orange_scrunchie', 'orange_shirt', 'orange_shorts', 'orange_skin', 'orange_skirt',
-    'orange_sky', 'orange_sleeves', 'orange_slice', 'orange_socks', 'orange_sweater', 'orange_tail', 'orange_tank_top', 'orange_theme',
-    'orange_thighhighs', 'orange_vest', 'orange_wings', 'orb', 'orc', 'orca', 'orca_girl', 'orca_hood',
-    'orchid', 'organs', 'orgasm', 'orgy', 'origami', 'original_race_uniform_(umamusume)', 'originium_arts_(arknights)', 'oripathy_lesion_(arknights)',
-    'ornate_border', 'ornate_ring', 'otaku', 'other_focus', 'otoko_no_ko', 'otonokizaka_school_uniform', 'otter', 'otter_ears',
-    'otter_tail', 'ouji_fashion', 'out-of-frame_censoring', 'out_of_character', 'out_of_frame', 'outdoors', 'outie_navel', 'outline',
-    'outside_border', 'outstretched_arm', 'outstretched_arms', 'outstretched_hand', 'outstretched_leg', 'oven', 'oven_mitts', 'over-kneehighs',
-    'over-rim_eyewear', 'over_shoulder', 'over_the_knee', 'overall_shorts', 'overall_skirt', 'overalls', 'overcast', 'overcoat',
-    'overgrown', 'oversized_animal', 'oversized_breast_cup', 'oversized_clothes', 'oversized_food', 'oversized_forearms', 'oversized_limbs', 'oversized_object',
-    'oversized_shirt', 'overskirt', 'ovum', 'owl', 'owl_ears', 'owl_girl', 'own_hands_clasped', 'own_hands_together',
-    'oxygen_mask', 'oyakodon_(sex)', 'p90', 'pacifier', 'package', 'padded_jacket', 'paddle', 'padlock',
-    'padlocked_collar', 'page_number', 'pagoda', 'pain', 'paint', 'paint_can', 'paint_on_body', 'paint_on_clothes',
-    'paint_splatter', 'paint_splatter_on_face', 'paintbrush', 'painted_clothes', 'painterly', 'painting_(action)', 'painting_(object)', 'paizuri',
-    'paizuri_invitation', 'paizuri_under_clothes', 'pajamas', 'pale_color', 'pale_skin', 'palette_(object)', 'palm_leaf', 'palm_tree',
-    'palms', 'palms_together', 'pancake', 'pancake_stack', 'panda', 'panda_ears', 'panda_hood', 'panicking',
-    'pankou', 'pansy', 'pant_suit', 'panther_ears', 'panther_girl', 'panther_tail', 'panties', 'panties_around_ankles',
-    'panties_around_one_leg', 'panties_aside', 'panties_on_head', 'panties_over_garter_belt', 'panties_over_pantyhose', 'panties_under_buruma', 'panties_under_pantyhose', 'panties_under_shorts',
-    'pants', 'pants_around_one_leg', 'pants_pull', 'pants_rolled_up', 'pants_tucked_in', 'pants_under_dress', 'pants_under_skirt', 'panty_lift',
-    'panty_peek', 'panty_pull', 'panty_straps', 'pantyhose', 'pantyhose_pull', 'pantyhose_under_shorts', 'pantyhose_under_swimsuit', 'pantylines',
-    'pantyshot', 'panzer_iv', 'papakha', 'paper', 'paper_airplane', 'paper_bag', 'paper_crane', 'paper_fan',
-    'paper_lantern', 'paper_on_head', 'paper_stack', 'paper_texture', 'paperclip', 'papers', 'paradeus', 'paradis_military_uniform',
-    'paralyzer', 'parasol', 'parfait', 'park', 'park_bench', 'parka', 'parody', 'parrot',
-    'parted_bangs', 'parted_hair', 'parted_lips', 'partially_colored', 'partially_fingerless_gloves', 'partially_shaded_face', 'partially_submerged', 'partially_unbuttoned',
-    'partially_underwater_shot', 'partially_undressed', 'partially_unzipped', 'partially_visible_vulva', 'party', 'party_hat', 'party_popper', 'pasta',
-    'pastel_colors', 'pasties', 'pastry', 'pastry_bag', 'pastry_box', 'patch', 'patchwork_clothes', 'patchwork_skin',
-    'path', 'patreon_logo', 'patreon_username', 'patterned', 'patterned_background', 'patterned_clothing', 'patterned_hair', 'pauldrons',
-    'pavement', 'paw_gloves', 'paw_hair_ornament', 'paw_pose', 'paw_print', 'paw_print_background', 'paw_print_pattern', 'paw_print_soles',
-    'paw_shoes', 'pawn_(chess)', 'pawpads', 'peace_symbol', 'peach', 'peach_hat_ornament', 'peacock_feathers', 'peaked_cap',
-    'pear', 'pearl_(gemstone)', 'pearl_bracelet', 'pearl_earrings', 'pearl_hair_ornament', 'pearl_necklace', 'pearl_thong', 'pectoral_cleavage',
-    'pectoral_docking', 'pectoral_focus', 'pectoral_grab', 'pectoral_press', 'pectorals', 'pee', 'pee_stain', 'peeing',
-    'peeing_self', 'peeking', 'peeking_out', 'peeking_through_fingers', 'peeling', 'pegasus', 'pegasus_wings', 'pegging',
-    'pelt', 'pelvic_curtain', 'pelvic_curtain_lift', 'pen', 'pen_in_pocket', 'pencil', 'pencil_case', 'pencil_dress',
-    'pencil_skirt', 'pendant', 'pendant_choker', 'pendant_collar', 'pendant_watch', 'pendulum', 'penetration_gesture', 'penguin',
-    'penguin_costume', 'penguin_girl', 'penguin_hood', 'penguin_tail', 'penis', 'penis_awe', 'penis_grab', 'penis_in_panties',
-    'penis_measuring', 'penis_on_ass', 'penis_on_face', 'penis_on_head', 'penis_on_pussy', 'penis_on_stomach', 'penis_out', 'penis_over_eyes',
-    'penis_over_one_eye', 'penis_peek', 'penis_shadow', 'penis_size_difference', 'penis_tentacle', 'penis_to_breast', 'penis_under_another\'s_clothes', 'penises_touching',
-    'penlight_(glowstick)', 'pennant', 'pentacle', 'pentagram', 'peony_(flower)', 'peony_print', 'people', 'perfume_bottle',
-    'peril', 'perineum', 'perky_breasts', 'perpendicular_paizuri', 'persimmon', 'person_on_head', 'personality_switch', 'personification',
-    'perspective', 'pervert', 'pet', 'pet_bowl', 'pet_food', 'pet_play', 'petals', 'petals_on_liquid',
-    'petite', 'petticoat', 'petting', 'phallic_symbol', 'phimosis', 'phoenix', 'phone', 'phone_booth',
-    'phonograph', 'photo_(object)', 'photo_background', 'photo_inset', 'photorealistic', 'piano', 'piano_bench', 'piano_keys',
-    'piano_print', 'pickaxe', 'picking_up', 'pickup_truck', 'picnic', 'picnic_basket', 'picture_frame', 'pie',
-    'pier', 'piercing', 'pig', 'pig_ears', 'pigeon', 'pigeon-toed', 'piggyback', 'pikachu_(cosplay)',
-    'pikmin_(creature)', 'piledriver_(sex)', 'pill', 'pill_earrings', 'pill_hair_ornament', 'pillar', 'pillarboxed', 'pillbox_hat',
-    'pillory', 'pillow', 'pillow_grab', 'pillow_hug', 'pilot', 'pin', 'pinafore_dress', 'pince-nez',
-    'pinching', 'pinching_sleeves', 'pine_tree', 'pineapple', 'pinecone', 'pink-framed_eyewear', 'pink-tinted_eyewear', 'pink_apron',
-    'pink_arm_warmers', 'pink_ascot', 'pink_background', 'pink_bag', 'pink_belt', 'pink_bikini', 'pink_blood', 'pink_bodysuit',
-    'pink_border', 'pink_bow', 'pink_bowtie', 'pink_bra', 'pink_butterfly', 'pink_camisole', 'pink_cape', 'pink_capelet',
-    'pink_cardigan', 'pink_choker', 'pink_coat', 'pink_collar', 'pink_diamond_765_(idolmaster)', 'pink_dress', 'pink_eyes', 'pink_eyeshadow',
-    'pink_feathers', 'pink_fire', 'pink_flower', 'pink_footwear', 'pink_fur', 'pink_gemstone', 'pink_gloves', 'pink_hair',
-    'pink_hairband', 'pink_hakama', 'pink_halo', 'pink_hat', 'pink_headband', 'pink_hoodie', 'pink_horns', 'pink_innertube',
-    'pink_jacket', 'pink_kimono', 'pink_leotard', 'pink_lips', 'pink_nails', 'pink_neckerchief', 'pink_necktie', 'pink_one-piece_swimsuit',
-    'pink_outline', 'pink_pajamas', 'pink_panties', 'pink_pants', 'pink_pantyhose', 'pink_petals', 'pink_pupils', 'pink_ribbon',
-    'pink_rose', 'pink_sailor_collar', 'pink_sarong', 'pink_sash', 'pink_scarf', 'pink_sclera', 'pink_scrunchie', 'pink_shirt',
-    'pink_shorts', 'pink_skin', 'pink_skirt', 'pink_sky', 'pink_sleeves', 'pink_socks', 'pink_sports_bra', 'pink_sweater',
-    'pink_sweater_vest', 'pink_tail', 'pink_tank_top', 'pink_theme', 'pink_thighhighs', 'pink_track_suit', 'pink_trim', 'pink_tulip',
-    'pink_umbrella', 'pink_vest', 'pink_wings', 'pink_wrist_cuffs', 'pinky_out', 'pinky_swear', 'pinned', 'pinstripe_dress',
-    'pinstripe_jacket', 'pinstripe_pants', 'pinstripe_pattern', 'pinstripe_shirt', 'pinstripe_suit', 'pinstripe_vest', 'pinup_(style)', 'pinwheel',
-    'pipe_in_mouth', 'pirate', 'pirate_costume', 'pirate_hat', 'pitcher_(container)', 'pitchfork', 'pith_helmet', 'pixel_art',
-    'pixel_heart', 'pixelated', 'pixie_cut', 'pixiv_id', 'pixiv_logo', 'pixiv_username', 'pizza', 'pizza_box',
-    'pizza_slice', 'plackart', 'plague_doctor_mask', 'plaid_apron', 'plaid_background', 'plaid_bikini', 'plaid_bow', 'plaid_bowtie',
-    'plaid_bra', 'plaid_clothes', 'plaid_dress', 'plaid_hat', 'plaid_jacket', 'plaid_necktie', 'plaid_panties', 'plaid_pants',
-    'plaid_ribbon', 'plaid_scarf', 'plaid_shirt', 'plaid_shorts', 'plaid_skirt', 'plaid_trim', 'plaid_vest', 'planet',
-    'planet_hair_ornament', 'planetary_ring', 'plant', 'plant_girl', 'plant_hair', 'plant_roots', 'plantar_flexion', 'planted',
-    'planted_sword', 'planted_umbrella', 'plap', 'plastic_bag', 'plastic_bottle', 'plate', 'plate_armor', 'platform_boots',
-    'platform_footwear', 'platform_heels', 'playboy_bunny', 'player_2', 'playground', 'playing', 'playing_card', 'playing_games',
-    'playing_guitar', 'playing_instrument', 'playing_piano', 'playing_sports', 'playing_with_another\'s_hair', 'playing_with_own_hair', 'playstation_controller', 'playstation_portable',
-    'pleading_face_emoji', 'pleated_dress', 'pleated_shirt', 'pleated_skirt', 'pleated_sleeves', 'plectrum', 'pliers', 'plugsuit',
-    'plum_blossoms', 'plume', 'plumeria', 'plump', 'plunging_neckline', 'plus_sign', 'pocari_sweat', 'pocket',
-    'pocket_watch', 'pocky', 'pocky_day', 'pocky_in_mouth', 'pocky_kiss', 'poi', 'pointed_crown', 'pointer',
-    'pointing', 'pointing_at_another', 'pointing_at_self', 'pointing_at_viewer', 'pointing_down', 'pointing_forward', 'pointing_melee_weapon', 'pointing_up',
-    'pointless_censoring', 'pointless_condom', 'pointy_breasts', 'pointy_ears', 'pointy_footwear', 'pointy_hair', 'pointy_hat', 'pointy_nose',
-    'poison', 'poke_ball', 'poke_ball_(basic)', 'poke_ball_(legends)', 'poke_ball_print', 'poke_ball_symbol', 'poke_ball_theme', 'pokedex_number',
-    'pokemon_(creature)', 'pokemon_focus', 'pokemon_move', 'pokemon_on_head', 'pokemon_on_lap', 'pokemon_on_shoulder', 'pokemon_tail', 'pokephilia',
-    'poker_chip', 'poker_table', 'poketch', 'poking', 'polar_bear', 'polaroid_photo', 'pole', 'pole_dancing',
-    'polearm', 'polearm_behind_back', 'poleyn', 'police', 'police_badge', 'police_car', 'police_hat', 'police_uniform',
-    'policeman', 'policewoman', 'polka_dot', 'polka_dot_background', 'polka_dot_bikini', 'polka_dot_bow', 'polka_dot_bowtie', 'polka_dot_bra',
-    'polka_dot_dress', 'polka_dot_headwear', 'polka_dot_legwear', 'polka_dot_pajamas', 'polka_dot_panties', 'polka_dot_ribbon', 'polka_dot_scrunchie', 'polka_dot_shirt',
-    'polka_dot_skirt', 'polka_dot_swimsuit', 'polo_shirt', 'pom_pom_(cheerleading)', 'pom_pom_(clothes)', 'pom_pom_beanie', 'pom_pom_earrings', 'pom_pom_hair_ornament',
-    'pompadour', 'pon_de_ring', 'poncho', 'pond', 'pony_(animal)', 'ponytail', 'ponytail_with_braided_base', 'pool',
-    'pool_ladder', 'pool_of_blood', 'poolside', 'poop', 'popcorn', 'popped_button', 'popped_collar', 'poppy_(flower)',
-    'popsicle', 'popsicle_in_mouth', 'popsicle_stick', 'porch', 'porkpie_hat', 'pornography', 'portal_(object)', 'portrait',
-    'portrait_(object)', 'pose_imitation', 'possessed', 'post-apocalypse', 'postbox_(outgoing_mail)', 'poster_(medium)', 'poster_(object)', 'potara_earrings',
-    'potato', 'potato_chips', 'potion', 'potted_plant', 'pouch', 'pouring', 'pouring_onto_self', 'pout',
-    'pov', 'pov_across_bed', 'pov_across_table', 'pov_crotch', 'pov_doorway', 'pov_hands', 'power_armor', 'power_connection',
-    'power_lines', 'power_suit', 'power_symbol', 'power_symbol-shaped_pupils', 'powering_up', 'prank', 'pravda_(emblem)', 'pravda_military_uniform',
-    'pravda_school_uniform', 'prayer_beads', 'praying', 'precum', 'precum_drip', 'precum_string', 'pregnancy_test', 'pregnant',
-    'prehensile_hair', 'prehensile_ribbon', 'prehensile_tail', 'presenting', 'presenting_armpit', 'presenting_ass', 'presenting_breasts', 'presenting_foot',
-    'presenting_pussy', 'presenting_removed_panties', 'price_tag', 'priest', 'priestess', 'primarch', 'prince', 'princess',
-    'princess_carry', 'print_apron', 'print_bikini', 'print_bow', 'print_bowtie', 'print_bra', 'print_dress', 'print_footwear',
-    'print_gloves', 'print_hairband', 'print_headwear', 'print_hoodie', 'print_jacket', 'print_kimono', 'print_leotard', 'print_mug',
-    'print_necktie', 'print_pajamas', 'print_panties', 'print_pants', 'print_pantyhose', 'print_ribbon', 'print_sarong', 'print_scarf',
-    'print_shirt', 'print_shorts', 'print_skirt', 'print_sleeves', 'print_socks', 'print_sweater', 'print_swimsuit', 'print_thighhighs',
-    'prison', 'prison_cell', 'prison_clothes', 'problem_solver_68_(blue_archive)', 'procreate_(software)', 'product_placement', 'profanity', 'profile',
-    'projected_inset', 'projectile_cum', 'projectile_lactation', 'prone_bone', 'propeller', 'propeller_fighter', 'propeller_hair_ornament', 'prostate_milking',
-    'prosthesis', 'prosthetic_arm', 'prosthetic_leg', 'prostitution', 'prostration', 'protecting', 'prototype_design', 'psychic',
-    'pubic_hair', 'pubic_hair_peek', 'pubic_stubble', 'pubic_tattoo', 'public_indecency', 'public_nudity', 'public_use', 'public_vibrator',
-    'puckered_anus', 'puckered_lips', 'pudding', 'puddle', 'puff_and_slash_sleeves', 'puff_of_air', 'puffy_cheeks', 'puffy_detached_sleeves',
-    'puffy_long_sleeves', 'puffy_nipples', 'puffy_pants', 'puffy_short_sleeves', 'puffy_shorts', 'puffy_sleeves', 'pulling', 'pulling_another\'s_clothes',
-    'pulling_own_clothes', 'pump_action', 'pumpkin', 'pumpkin_hair_ornament', 'pumpkin_hat', 'pumps', 'pun', 'punching',
-    'punk', 'puppet', 'puppet_rings', 'puppet_strings', 'puppy', 'purple-framed_eyewear', 'purple-tinted_eyewear', 'purple_apron',
-    'purple_arm_warmers', 'purple_armband', 'purple_armor', 'purple_ascot', 'purple_background', 'purple_bag', 'purple_belt', 'purple_bikini',
-    'purple_bodysuit', 'purple_border', 'purple_bow', 'purple_bowtie', 'purple_bra', 'purple_butterfly', 'purple_camisole', 'purple_cape',
-    'purple_capelet', 'purple_cardigan', 'purple_choker', 'purple_cloak', 'purple_coat', 'purple_collar', 'purple_corset', 'purple_dress',
-    'purple_eyes', 'purple_eyeshadow', 'purple_fire', 'purple_flower', 'purple_footwear', 'purple_fur', 'purple_gemstone', 'purple_gloves',
-    'purple_hair', 'purple_hairband', 'purple_hakama', 'purple_halo', 'purple_hat', 'purple_headband', 'purple_hood', 'purple_hoodie',
-    'purple_horns', 'purple_jacket', 'purple_kimono', 'purple_leotard', 'purple_lips', 'purple_nails', 'purple_neckerchief', 'purple_necktie',
-    'purple_one-piece_swimsuit', 'purple_outline', 'purple_panties', 'purple_pants', 'purple_pantyhose', 'purple_pubic_hair', 'purple_pupils', 'purple_ribbon',
-    'purple_robe', 'purple_rope', 'purple_rose', 'purple_sailor_collar', 'purple_sash', 'purple_scarf', 'purple_sclera', 'purple_scrunchie',
-    'purple_serafuku', 'purple_shirt', 'purple_shorts', 'purple_skin', 'purple_skirt', 'purple_sky', 'purple_sleeves', 'purple_socks',
-    'purple_suit', 'purple_sweater', 'purple_sweater_vest', 'purple_tabard', 'purple_tail', 'purple_tank_top', 'purple_theme', 'purple_thighhighs',
-    'purple_tongue', 'purple_trim', 'purple_umbrella', 'purple_veil', 'purple_vest', 'purple_wings', 'pursed_lips', 'pushing',
-    'pushing_away', 'pussy', 'pussy_cutout', 'pussy_focus', 'pussy_juice', 'pussy_juice_drip_through_clothes', 'pussy_juice_on_fingers', 'pussy_juice_puddle',
-    'pussy_juice_stain', 'pussy_juice_trail', 'pussy_peek', 'pussy_piercing', 'puzzle', 'puzzle_piece', 'pyramid_(structure)', 'pyrokinesis',
-    'qi_lolita', 'qingdai_guanmao', 'qingxin_flower', 'qixiong_ruqun', 'qr_code', 'quad_braids', 'quad_drills', 'quad_tails',
-    'quadruple_amputee', 'quarter_note', 'queen', 'queen_(chess)', 'queen_(playing_card)', 'queen_of_spades_symbol', 'quill', 'quiver',
-    'rabbit', 'rabbit-shaped_pupils', 'rabbit_boy', 'rabbit_costume', 'rabbit_ear_hairband', 'rabbit_ears', 'rabbit_girl', 'rabbit_hair_ornament',
-    'rabbit_hat', 'rabbit_hood', 'rabbit_house_uniform', 'rabbit_on_head', 'rabbit_pose', 'rabbit_print', 'rabbit_tail', 'raccoon',
-    'raccoon_ears', 'raccoon_girl', 'raccoon_tail', 'race_bib', 'race_queen', 'race_vehicle', 'racecar', 'racerback',
-    'racetrack', 'racing', 'racing_suit', 'racket', 'radar', 'radiation_symbol', 'radio', 'radio_antenna',
-    'radish', 'raglan_sleeves', 'railing', 'railroad_crossing', 'railroad_tracks', 'raimon', 'raimon_soccer_uniform', 'rain',
-    'rainbow', 'rainbow_background', 'rainbow_gradient', 'rainbow_hair', 'rainbow_order', 'raincoat', 'raised_eyebrow', 'raised_eyebrows',
-    'raised_fist', 'ramen', 'ramune', 'randoseru', 'ranguage', 'rape', 'rape_face', 'rapier',
-    'rash_guard', 'raspberry', 'rattle', 'ray_gun', 'rayman_limbs', 'razor', 'reach-around', 'reaching',
-    'reaching_towards_another', 'reaching_towards_viewer', 'reading', 'ready_to_draw', 'real_life_insert', 'real_world_location', 'realistic', 'reclining',
-    'record', 'recorder', 'recording', 'rectangular_eyewear', 'rectangular_halo', 'rectangular_mouth', 'recurring_image', 'red-framed_eyewear',
-    'red-tinted_eyewear', 'red_apron', 'red_armband', 'red_armor', 'red_ascot', 'red_background', 'red_bag', 'red_bandana',
-    'red_bandeau', 'red_belt', 'red_bikini', 'red_blindfold', 'red_bodysuit', 'red_border', 'red_bow', 'red_bowtie',
-    'red_bra', 'red_brooch', 'red_buruma', 'red_butterfly', 'red_camisole', 'red_cape', 'red_capelet', 'red_cardigan',
-    'red_carpet', 'red_choker', 'red_cloak', 'red_coat', 'red_collar', 'red_corset', 'red_cross', 'red_crown',
-    'red_dress', 'red_eyeliner', 'red_eyes', 'red_eyeshadow', 'red_feathers', 'red_flower', 'red_footwear', 'red_fur',
-    'red_gemstone', 'red_gloves', 'red_hair', 'red_hairband', 'red_hakama', 'red_halo', 'red_hands', 'red_hat',
-    'red_headband', 'red_helmet', 'red_hood', 'red_hoodie', 'red_horns', 'red_jacket', 'red_jumpsuit', 'red_kimono',
-    'red_leotard', 'red_lips', 'red_male_underwear', 'red_mask', 'red_mittens', 'red_moon', 'red_nails', 'red_neckerchief',
-    'red_necktie', 'red_nose', 'red_one-piece_swimsuit', 'red_oni', 'red_outline', 'red_panda_ears', 'red_panties', 'red_pants',
-    'red_pantyhose', 'red_petals', 'red_pubic_hair', 'red_pupils', 'red_ribbon', 'red_robe', 'red_rope', 'red_rose',
-    'red_sailor_collar', 'red_sash', 'red_scales', 'red_scarf', 'red_sclera', 'red_scrunchie', 'red_shawl', 'red_shirt',
-    'red_shorts', 'red_skin', 'red_skirt', 'red_sky', 'red_sleeves', 'red_socks', 'red_sports_bra', 'red_star',
-    'red_streaks', 'red_suit', 'red_sun', 'red_sweater', 'red_tabard', 'red_tail', 'red_tank_top', 'red_theme',
-    'red_thighhighs', 'red_track_suit', 'red_trim', 'red_tube_top', 'red_umbrella', 'red_vest', 'red_wine', 'red_wings',
-    'red_wrist_cuffs', 'redesign', 'reference_inset', 'reference_sheet', 'reflection', 'reflection_focus', 'reflective_floor', 'reflective_water',
-    'refraction', 'refrigerator', 'rei_no_himo', 'rei_no_pool', 'reindeer', 'reindeer_antlers', 'reindeer_costume', 'reins',
-    'relaxing', 'reloading', 'remembering', 'remote_control', 'remote_control_vibrator', 'removing_eyewear', 'removing_jacket', 'reptile_boy',
-    'reptile_girl', 'request_inset', 'rerebrace', 'respirator', 'restaurant', 'restrained', 'restroom', 'retro_artstyle',
-    'revealing_clothes', 'revealing_layer', 'reverse_bunnysuit', 'reverse_cowgirl_position', 'reverse_fellatio', 'reverse_grip', 'reverse_nursing_handjob', 'reverse_outfit',
-    'reverse_spitroast', 'reverse_suspended_congress', 'reverse_trap', 'reverse_upright_straddle', 'revolver', 'rhine_lab_logo', 'rhodes_island_logo_(arknights)', 'rhythmic_gymnastics',
-    'ribbed_bodysuit', 'ribbed_dress', 'ribbed_legwear', 'ribbed_leotard', 'ribbed_shirt', 'ribbed_sleeves', 'ribbed_socks', 'ribbed_sweater',
-    'ribbed_thighhighs', 'ribbon', 'ribbon-trimmed_bra', 'ribbon-trimmed_capelet', 'ribbon-trimmed_clothes', 'ribbon-trimmed_collar', 'ribbon-trimmed_dress', 'ribbon-trimmed_headwear',
-    'ribbon-trimmed_shirt', 'ribbon-trimmed_skirt', 'ribbon-trimmed_sleeves', 'ribbon-trimmed_thighhighs', 'ribbon_between_breasts', 'ribbon_bondage', 'ribbon_braid', 'ribbon_choker',
-    'ribbon_earrings', 'ribbon_in_mouth', 'ribbon_trim', 'ribs', 'rice', 'rice_bowl', 'rice_cooker', 'rice_hat',
-    'rice_on_face', 'rice_paddy', 'rider_belt', 'riding', 'riding_animal', 'riding_bicycle', 'riding_crop', 'riding_pokemon',
-    'rifle', 'rigging', 'right-over-left_kimono', 'right-to-left_comic', 'rimless_eyewear', 'rina-chan_board', 'ring', 'ring-con',
-    'ring_gag', 'ring_hair_extensions', 'ring_hair_ornament', 'ring_necklace', 'ringed_eyes', 'ringlets', 'ripples', 'rising_sun_flag',
-    'rito', 'ritual_baton', 'river', 'riverbank', 'riyo_(lyomsnpmp)_(style)', 'road', 'road_sign', 'roasted_sweet_potato',
-    'robe', 'robot', 'robot_animal', 'robot_ears', 'robot_girl', 'robot_joints', 'rock', 'rock_paper_scissors',
-    'rocket', 'rocket_launcher', 'rod_of_remorse', 'role_reversal', 'roller_coaster', 'roller_skates', 'rolling', 'rolling_eyes',
-    'rolling_suitcase', 'romaji_text', 'roman_clothes', 'roman_numeral', 'romper', 'rooftop', 'rook_(chess)', 'rooster',
-    'roots_(hair)', 'rope', 'rope_belt', 'rosary', 'rose', 'rose_bush', 'rose_petals', 'rose_print',
-    'roswaal_mansion_maid_uniform', 'rotary_phone', 'rotational_symmetry', 'rough_sex', 'round-bottom_flask', 'round_border', 'round_eyewear', 'round_image',
-    'round_table', 'round_teeth', 'round_window', 'rounded_corners', 'roundel', 'royal_robe', 'rpg_(weapon)', 'rubber_band',
-    'rubber_boots', 'rubber_duck', 'rubber_gloves', 'rubbing', 'rubbing_eyes', 'rubble', 'rubik\'s_cube', 'rudder_footwear',
-    'ruffling_hair', 'rug', 'ruins', 'ruler', 'runes', 'running', 'running_track', 'runny_makeup',
-    'runny_nose', 'rural', 'russia', 'russian_flag', 'russian_text', 'rust', 'ruyi_jingu_bang', 'ryona',
-    'ryouou_school_uniform', 'sabaton', 'saber_(fate)_(cosplay)', 'saber_(weapon)', 'sacabambaspis', 'sack', 'sad', 'sad_smile',
-    'saddle', 'sadism', 'safety_glasses', 'safety_pin', 'sagging_breasts', 'sail', 'sailor', 'sailor_bikini',
-    'sailor_collar', 'sailor_collar_lift', 'sailor_dress', 'sailor_hat', 'sailor_moon_(cosplay)', 'sailor_moon_redraw_challenge_(meme)', 'sailor_senshi', 'sailor_senshi_uniform',
-    'sailor_shirt', 'sailor_swimsuit_(idolmaster)', 'sainan_high_school_uniform', 'saint_quartz_(fate)', 'saiyan', 'saiyan_armor', 'sakazuki', 'sake',
-    'sake_bottle', 'sakugawa_school_uniform', 'sakura_empire_(emblem)', 'sakuragaoka_high_school_uniform', 'sakuramon', 'salad', 'salaryman', 'saliva',
-    'saliva_drip', 'saliva_on_penis', 'saliva_trail', 'salmon_run_(splatoon)', 'salt_shaker', 'salute', 'sam_browne_belt', 'same-sex_bathing',
-    'sample_watermark', 'samurai', 'sand', 'sand_castle', 'sand_sculpture', 'sandals', 'sandwich', 'sandwiched',
-    'sangvis_ferri', 'sanpaku', 'sanshoku_dango', 'santa_bikini', 'santa_boots', 'santa_costume', 'santa_dress', 'santa_gloves',
-    'santa_hat', 'sarashi', 'sarong', 'sash', 'satchel', 'satellite_dish', 'satin', 'satin_panties',
-    'saturn_(planet)', 'sauce', 'saucer', 'sauna', 'saunders_military_uniform', 'saunders_school_uniform', 'saury', 'sausage',
-    'saw', 'saxophone', 'sayagata', 'scabbard', 'scale_armor', 'scales', 'scalpel', 'scanlines',
-    'scar', 'scar_across_eye', 'scar_on_arm', 'scar_on_back', 'scar_on_cheek', 'scar_on_chest', 'scar_on_face', 'scar_on_forehead',
-    'scar_on_hand', 'scar_on_leg', 'scar_on_mouth', 'scar_on_neck', 'scar_on_nose', 'scar_on_shoulder', 'scar_on_stomach', 'scar_on_tail',
-    'scared', 'scarf', 'scarf_over_mouth', 'scarlet_devil_mansion', 'scars_all_over', 'scene_reference', 'scenery', 'scepter',
-    'school', 'school_bag', 'school_briefcase', 'school_chair', 'school_desk', 'school_emblem', 'school_hat', 'school_of_fish',
-    'school_swimsuit', 'school_uniform', 'science_fiction', 'scissor_blade_(kill_la_kill)', 'scissors', 'scolding', 'scoop_neck', 'scooter',
-    'scope', 'scorpion_tail', 'scouter', 'scowl', 'scratches', 'scratching', 'scratching_cheek', 'scratching_head',
-    'screaming', 'screen', 'screen_light', 'screenshot_background', 'screenshot_inset', 'screentones', 'screw', 'screw_in_head',
-    'screwdriver', 'scribble', 'scribble_censor', 'scroll', 'scrunchie', 'scylla', 'scythe', 'seagull',
-    'seal_(animal)', 'seal_impression', 'seamed_legwear', 'seaplane', 'searchlight', 'seashell', 'season_connection', 'seatbelt',
-    'seaweed', 'seductive_smile', 'see-through_body', 'see-through_cleavage', 'see-through_clothes', 'see-through_dress', 'see-through_jacket', 'see-through_legwear',
-    'see-through_leotard', 'see-through_one-piece_swimsuit', 'see-through_panties', 'see-through_sarong', 'see-through_shawl', 'see-through_shirt', 'see-through_silhouette', 'see-through_skirt',
-    'see-through_sleeves', 'see-through_veil', 'seed', 'segmented_comic', 'seigaiha', 'seikan_hikou', 'seishou_elementary_school_uniform', 'seishou_music_academy_uniform',
-    'seiza', 'selection_university_military_uniform', 'self-harm', 'self-harm_scar', 'self_cosplay', 'self_hug', 'selfcest', 'selfie',
-    'selfie_stick', 'semi-rimless_eyewear', 'senbei', 'senkou_hanabi', 'sepia', 'sequential', 'serafuku', 'seraph',
-    'serasuku', 'serious', 'serval_print', 'setsubun', 'severed_arm', 'severed_hair', 'severed_head', 'severed_limb',
-    'sewing', 'sewing_needle', 'sex', 'sex_from_behind', 'sex_machine', 'sex_toy', 'sextuplets', 'sexual_coaching',
-    'sexual_harassment', 'sexually_suggestive', 'shackles', 'shade', 'shaded_face', 'shading_eyes', 'shadow', 'shaft_look',
-    'shaking', 'shaking_head', 'shako_cap', 'shakujou', 'shallow_water', 'shamisen', 'shamoji', 'shampoo_bottle',
-    'shaped_pubic_hair', 'shards', 'shared_bathing', 'shared_blanket', 'shared_clothes', 'shared_earphones', 'shared_food', 'shared_object_insertion',
-    'shared_scarf', 'shared_speech_bubble', 'shared_umbrella', 'sharing_food', 'sharingan', 'shark', 'shark_costume', 'shark_fin',
-    'shark_girl', 'shark_hair_ornament', 'shark_hood', 'shark_print', 'shark_tail', 'sharp_fingernails', 'sharp_teeth', 'sharp_toenails',
-    'shattered', 'shaved_ice', 'shawl', 'sheath', 'sheathed', 'sheep', 'sheep_costume', 'sheep_ears',
-    'sheep_girl', 'sheep_horns', 'sheep_tail', 'sheet_ghost', 'sheet_grab', 'sheet_music', 'sheikah', 'sheikah_slate',
-    'shelf', 'shell', 'shell_bikini', 'shell_casing', 'shell_earrings', 'shell_hair_ornament', 'shell_necklace', 'shiba_inu',
-    'shibari', 'shibari_over_clothes', 'shibari_under_clothes', 'shide', 'shield', 'shield_on_back', 'shikigami', 'shikishi',
-    'shimaidon_(sex)', 'shimakaze_(kancolle)_(cosplay)', 'shimenawa', 'shimokitazawa_high_school_uniform', 'shin_guards', 'shinai', 'shinda_sekai_sensen_uniform', 'shindan_maker',
-    'shinigami', 'shinsengumi', 'shiny_and_normal', 'shiny_clothes', 'shiny_legwear', 'shiny_pokemon', 'shiny_skin', 'shiny_swimsuit',
-    'ship', 'ship_turret', 'shippou_(pattern)', 'shirt', 'shirt_around_waist', 'shirt_bow', 'shirt_grab', 'shirt_in_mouth',
-    'shirt_lift', 'shirt_overhang', 'shirt_partially_tucked_in', 'shirt_pull', 'shirt_tucked_in', 'shirt_tug', 'shirt_under_dress', 'shirt_under_shirt',
-    'shitty_admiral_(phrase)', 'shoe_dangle', 'shoe_soles', 'shoelaces', 'shoes', 'shogi', 'shooting_star', 'shop',
-    'shopping', 'shopping_bag', 'shopping_basket', 'shopping_cart', 'shore', 'short-sleeved_jacket', 'short-sleeved_sweater', 'short_bangs',
-    'short_braid', 'short_dress', 'short_eyebrows', 'short_hair', 'short_hair_with_long_locks', 'short_jumpsuit', 'short_kimono', 'short_necktie',
-    'short_over_long_sleeves', 'short_ponytail', 'short_shorts', 'short_sidetail', 'short_sleeves', 'short_sword', 'short_tail', 'short_twintails',
-    'short_yukata', 'shorts', 'shorts_around_one_leg', 'shorts_aside', 'shorts_pull', 'shorts_tan', 'shorts_under_dress', 'shorts_under_skirt',
-    'shortstack', 'shot_glass', 'shota', 'shotgun', 'shotgun_shell', 'shouji', 'shoujo_kitou-chuu', 'shoulder_armor',
-    'shoulder_bag', 'shoulder_belt', 'shoulder_blades', 'shoulder_blush', 'shoulder_boards', 'shoulder_cannon', 'shoulder_carry', 'shoulder_cutout',
-    'shoulder_guard', 'shoulder_holster', 'shoulder_pads', 'shoulder_peek', 'shoulder_plates', 'shoulder_sash', 'shoulder_spikes', 'shoulder_strap',
-    'shoulder_tattoo', 'shouting', 'shovel', 'shower_(place)', 'shower_head', 'showering', 'showgirl_skirt', 'shrimp',
-    'shrimp_tempura', 'shrine', 'shrug_(clothing)', 'shrugging', 'shuangyaji', 'shuka_high_school_uniform', 'shuriken', 'shushing',
-    'shuuchiin_academy_school_uniform', 'shuujin_academy_school_uniform', 'shy', 'siblings', 'sick', 'sickle', 'side-by-side', 'side-seamed_legwear',
-    'side-tie_bikini_bottom', 'side-tie_dress', 'side-tie_leotard', 'side-tie_panties', 'side-tie_peek', 'side-tie_shirt', 'side-tie_skirt', 'side-tie_swimsuit',
-    'side_ahoge', 'side_braid', 'side_braids', 'side_cape', 'side_cutout', 'side_drill', 'side_part', 'side_ponytail',
-    'side_slit', 'side_slit_shorts', 'side_up_bun', 'sideboob', 'sideburns', 'sideburns_stubble', 'sidecut', 'sideless_dress',
-    'sideless_kimono', 'sideless_outfit', 'sideless_shirt', 'sidelighting', 'sidelocks', 'sidelocks_tied_back', 'sidepec', 'sidesaddle',
-    'sidewalk', 'sideways', 'sideways_glance', 'sideways_hat', 'sideways_mouth', 'sig_sauer', 'sigh', 'sign',
-    'signature', 'signpost', 'silent_comic', 'silhouette', 'silk', 'silver_dress', 'silver_trim', 'simple_background',
-    'simple_bird', 'simplified_chinese_text', 'simulacrum_(titanfall)', 'simulated_fellatio', 'singing', 'single-shoulder_dress', 'single-shoulder_shirt', 'single_arm_warmer',
-    'single_bare_arm', 'single_bare_foot', 'single_bare_leg', 'single_bare_shoulder', 'single_blush_sticker', 'single_boot', 'single_braid', 'single_bridal_gauntlet',
-    'single_detached_sleeve', 'single_drill', 'single_ear_cover', 'single_ear_down', 'single_earphone_removed', 'single_earring', 'single_elbow_glove', 'single_elbow_pad',
-    'single_epaulette', 'single_fingerless_glove', 'single_fishnet_legwear', 'single_garter_strap', 'single_gauntlet', 'single_glove', 'single_hair_bun', 'single_hair_intake',
-    'single_hair_ring', 'single_hair_tube', 'single_head_wing', 'single_horizontal_stripe', 'single_horn', 'single_knee_boot', 'single_knee_pad', 'single_kneehigh',
-    'single_leg_pantyhose', 'single_mechanical_arm', 'single_mechanical_hand', 'single_off_shoulder', 'single_pantsleg', 'single_pauldron', 'single_sandal', 'single_shoe',
-    'single_shoulder_pad', 'single_side_bun', 'single_sidelock', 'single_sleeve', 'single_sock', 'single_strap', 'single_stripe', 'single_tear',
-    'single_thigh_boot', 'single_thighhigh', 'single_vertical_stripe', 'single_wing', 'single_wrist_cuff', 'singlet', 'sink', 'sinking',
-    'siren_(azur_lane)', 'sisters', 'sitting', 'sitting_backwards', 'sitting_in_tree', 'sitting_on_animal', 'sitting_on_branch', 'sitting_on_face',
-    'sitting_on_head', 'sitting_on_lap', 'sitting_on_object', 'sitting_on_person', 'sitting_on_shoulder', 'sitting_on_stairs', 'sitting_on_table', 'sitting_on_throne',
-    'sitting_on_water', 'sitting_sideways', 'sixteenth_note', 'size_difference', 'skateboard', 'skateboarding', 'skates', 'skating',
-    'skeletal_arm', 'skeletal_hand', 'skeleton', 'skeleton_print', 'sketch', 'sketch_background', 'sketchbook', 'skewer',
-    'ski_goggles', 'skin-covered_horns', 'skin_fang', 'skin_fangs', 'skin_tight', 'skindentation', 'skinny', 'skirt',
-    'skirt_around_one_leg', 'skirt_basket', 'skirt_caught_on_object', 'skirt_flip', 'skirt_hold', 'skirt_lift', 'skirt_pull', 'skirt_set',
-    'skirt_suit', 'skirt_tug', 'skirt_under_dress', 'skull', 'skull_and_crossbones', 'skull_belt', 'skull_earrings', 'skull_hair_ornament',
-    'skull_hat_ornament', 'skull_mask', 'skull_necklace', 'skull_on_head', 'skull_ornament', 'skull_print', 'sky', 'sky_lantern',
-    'sky_print', 'skyline', 'skyscraper', 'slap_mark', 'slapping', 'slashing', 'slave', 'sledgehammer',
-    'sleep_mask', 'sleep_molestation', 'sleeping', 'sleeping_bag', 'sleeping_on_person', 'sleeping_upright', 'sleepwear', 'sleepy',
-    'sleeve_bow', 'sleeve_cuffs', 'sleeve_garter', 'sleeve_grab', 'sleeve_ribbon', 'sleeve_rolled_up', 'sleeved_leotard', 'sleeveless',
-    'sleeveless_bodysuit', 'sleeveless_coat', 'sleeveless_dress', 'sleeveless_duster', 'sleeveless_hoodie', 'sleeveless_jacket', 'sleeveless_kimono', 'sleeveless_shirt',
-    'sleeveless_sweater', 'sleeveless_turtleneck', 'sleeveless_turtleneck_leotard', 'sleeves_past_elbows', 'sleeves_past_fingers', 'sleeves_past_wrists', 'sleeves_pushed_up', 'sleeves_rolled_up',
-    'sleigh', 'slide', 'sliding', 'sliding_doors', 'slim_legs', 'slime_(creature)', 'slime_(substance)', 'slime_girl',
-    'sling_bikini_top', 'slingshot_swimsuit', 'slippers', 'slit_pupils', 'slouching', 'slug', 'small_breasts', 'small_horns',
-    'small_nipples', 'small_penis', 'small_sweatdrop', 'smartphone', 'smartphone_case', 'smeared_lipstick', 'smegma', 'smell',
-    'smelling', 'smelling_clothes', 'smelling_flower', 'smelling_penis', 'smile', 'smiley_face', 'smirk', 'smoke',
-    'smoke_trail', 'smokestack', 'smokestack_hair_ornament', 'smoking', 'smoking_barrel', 'smoking_pipe', 'smug', 'snack',
-    'snail', 'snake', 'snake_earrings', 'snake_hair', 'snake_hair_ornament', 'snake_print', 'snake_tail', 'snap-fit_buckle',
-    'snapping_fingers', 'sneakers', 'sneezing', 'sniper_rifle', 'snorkel', 'snot', 'snout', 'snow',
-    'snow_globe', 'snow_leopard_ears', 'snow_leopard_girl', 'snow_leopard_tail', 'snow_on_head', 'snow_rabbit', 'snowball', 'snowboard',
-    'snowflake_background', 'snowflake_hair_ornament', 'snowflake_print', 'snowflakes', 'snowing', 'snowman', 'so_moe_i\'m_gonna_die!', 'soaking_feet',
-    'soap', 'soap_bottle', 'soap_bubbles', 'soap_censor', 'sobbing', 'sobu_high_school_uniform', 'soccer', 'soccer_ball',
-    'soccer_uniform', 'sock_pull', 'socks', 'socks_over_pantyhose', 'soda', 'soda_bottle', 'soda_can', 'sode',
-    'soft_serve', 'soldier', 'soles', 'solid_circle_eyes', 'solid_circle_pupils', 'solid_eyes', 'solid_oval_eyes', 'solo',
-    'solo_focus', 'song_name', 'songover', 'sophist\'s_robe_(ff14)', 'sorcerer\'s_sutra_scroll', 'sos_brigade', 'soul_gem', 'sound_effects',
-    'soup', 'souryuu_asuka_langley_(cosplay)', 'soviet', 'soy_sauce', 'space', 'space_helmet', 'space_print', 'spacecraft',
-    'spacecraft_interior', 'spaceship_hair_ornament', 'spacesuit', 'spade_(shape)', 'spade_hair_ornament', 'spaghetti', 'spaghetti_strap', 'spandex',
-    'spanish_text', 'spanked', 'spanking', 'sparkle', 'sparkle_background', 'sparkle_hair_ornament', 'sparkle_print', 'sparkler',
-    'sparkling_aura', 'sparkling_eyes', 'sparks', 'sparrow', 'sparse_arm_hair', 'sparse_chest_hair', 'sparse_leg_hair', 'sparse_navel_hair',
-    'sparse_pubic_hair', 'sparse_stubble', 'spatula', 'speaker', 'speaking_tube_headset', 'spear', 'spear_the_gungnir', 'special_feeling_(meme)',
-    'species_connection', 'speech_bubble', 'speed_lines', 'spell_card', 'sperm_cell', 'sphere_earrings', 'spider', 'spider_girl',
-    'spider_lily', 'spider_print', 'spider_web', 'spider_web_print', 'spiked_anklet', 'spiked_armlet', 'spiked_armor', 'spiked_ball_and_chain',
-    'spiked_belt', 'spiked_bracelet', 'spiked_choker', 'spiked_club', 'spiked_collar', 'spiked_ear_piercing', 'spiked_footwear', 'spiked_hair',
-    'spiked_hairband', 'spiked_halo', 'spiked_helmet', 'spiked_jacket', 'spiked_pauldrons', 'spiked_penis', 'spiked_shell', 'spiked_tail',
-    'spikes', 'spill', 'spilling', 'spine', 'spines', 'spinning', 'spiral', 'spirit',
-    'spit_take', 'spitroast', 'spitting', 'splash_page', 'splashing', 'splatter', 'splattershot_(splatoon)', 'split',
-    'split-color_hair', 'split_mouth', 'split_ponytail', 'split_screen', 'split_theme', 'spoiler_(automobile)', 'spoken_anger_vein', 'spoken_blush',
-    'spoken_character', 'spoken_ellipsis', 'spoken_exclamation_mark', 'spoken_expression', 'spoken_food', 'spoken_heart', 'spoken_interrobang', 'spoken_musical_note',
-    'spoken_object', 'spoken_question_mark', 'spoken_squiggle', 'spoken_sweatdrop', 'spoken_x', 'spoken_zzz', 'sponge', 'spoon',
-    'spooning', 'spork', 'sports_bikini', 'sports_bra', 'sports_bra_lift', 'sports_car', 'sports_festival', 'sportswear',
-    'spot_color', 'spotlight', 'spots', 'spray_bottle', 'spray_can', 'spray_paint', 'spraying', 'spread_anus',
-    'spread_armpit', 'spread_arms', 'spread_ass', 'spread_fingers', 'spread_legs', 'spread_navel', 'spread_pussy', 'spread_pussy_under_clothes',
-    'spread_toes', 'spread_wings', 'spreader_bar', 'spreading_another\'s_pussy', 'spreading_own_pussy', 'spring_(season)', 'spring_onion', 'sprinkles',
-    'sprite', 'sprout', 'spurs', 'square', 'square-end_necktie', 'square_4koma', 'square_neckline', 'squat_toilet',
-    'squatting', 'squatting_cowgirl_position', 'squeans', 'squeezing', 'squid', 'squidbeak_splatoon', 'squiggle', 'squinting',
-    'squirrel', 'squirrel_ears', 'squirrel_girl', 'squirrel_tail', 'st._chronica_academy_school_uniform', 'st._gloriana\'s_(emblem)', 'st._gloriana\'s_military_uniform', 'st._gloriana\'s_school_uniform',
-    'st._theresa\'s_girls_academy_school_uniform', 'stab', 'stacking', 'stadium', 'staff', 'staff_(music)', 'staff_of_homa_(genshin_impact)', 'staff_of_selection_(fate)',
-    'stage', 'stage_lights', 'stahlhelm', 'stain', 'stained_clothes', 'stained_glass', 'stained_panties', 'stained_sheets',
-    'stairs', 'stakes_of_purgatory', 'stalk_in_mouth', 'stamp_mark', 'stand_(jojo)', 'standard_bearer', 'standing', 'standing_on_liquid',
-    'standing_on_one_leg', 'standing_sex', 'standing_split', 'stapler', 'star-shaped_eyewear', 'star-shaped_pupils', 'star_(sky)', 'star_(symbol)',
-    'star_brooch', 'star_choker', 'star_earrings', 'star_facial_mark', 'star_guardian_(league_of_legends)', 'star_hair_ornament', 'star_halo', 'star_hat_ornament',
-    'star_in_eye', 'star_necklace', 'star_of_david', 'star_ornament', 'star_pasties', 'star_print', 'star_sticker', 'star_symbol_background',
-    'star_tattoo', 'star_wand', 'starfighter', 'starfish', 'starfish_hair_ornament', 'staring', 'starlight_academy_school_uniform', 'starry_hair',
-    'starry_sky', 'starry_sky_background', 'starry_sky_print', 'starter_pokemon_trio', 'starting_block', 'starting_future_(umamusume)', 'static', 'stationary_restraints',
-    'stats', 'statue', 'steak', 'stealth_sex', 'steam', 'steam_censor', 'steam_locomotive', 'steaming_body',
-    'steampunk', 'steepled_fingers', 'steering_wheel', 'step-siblings', 'stepped_on', 'stethoscope', 'stick', 'stick_poster',
-    'sticker', 'sticker_on_face', 'sticky_note', 'stile_uniform', 'stiletto_(weapon)', 'stiletto_heels', 'still_life', 'stirring',
-    'stirrup_footwear', 'stirrup_legwear', 'stitched_arm', 'stitched_face', 'stitched_leg', 'stitched_mouth', 'stitched_neck', 'stitched_torso',
-    'stitches', 'stocks', 'stole', 'stomach', 'stomach_bulge', 'stomach_cutout', 'stomach_growling', 'stomach_tattoo',
-    'stomping', 'stone_floor', 'stone_lantern', 'stone_stairs', 'stone_walkway', 'stone_wall', 'stool', 'stop_sign',
-    'stopwatch', 'storefront', 'storm', 'stove', 'straddling', 'straddling_paizuri', 'straight-on', 'straight_hair',
-    'straitjacket', 'strangling', 'strap', 'strap-on', 'strap_between_breasts', 'strap_gap', 'strap_lift', 'strap_pull',
-    'strap_slip', 'strapless', 'strapless_bikini', 'strapless_bottom', 'strapless_bra', 'strapless_dress', 'strapless_leotard', 'strapless_one-piece_swimsuit',
-    'strapless_shirt', 'strappy_heels', 'straw_hat', 'strawberry', 'strawberry_cake', 'strawberry_hair_ornament', 'strawberry_panties', 'strawberry_print',
-    'strawberry_shortcake', 'strawberry_slice', 'stray_pubic_hair', 'streaked_hair', 'stream', 'streamers', 'streaming_tears', 'street',
-    'streetwear', 'stretching', 'striker_unit', 'string', 'string_bikini', 'string_bra', 'string_of_fate', 'string_of_flags',
-    'string_of_light_bulbs', 'string_panties', 'striped_arm_warmers', 'striped_background', 'striped_belt', 'striped_bikini', 'striped_bow', 'striped_bowtie',
-    'striped_bra', 'striped_clothes', 'striped_coat', 'striped_dress', 'striped_fur', 'striped_gloves', 'striped_hair', 'striped_hairband',
-    'striped_headwear', 'striped_hoodie', 'striped_horns', 'striped_jacket', 'striped_kimono', 'striped_neckerchief', 'striped_necktie', 'striped_one-piece_swimsuit',
-    'striped_pajamas', 'striped_panties', 'striped_pants', 'striped_pantyhose', 'striped_ribbon', 'striped_scarf', 'striped_shirt', 'striped_shorts',
-    'striped_skirt', 'striped_sleeves', 'striped_socks', 'striped_sweater', 'striped_tail', 'striped_thighhighs', 'striped_vest', 'stripper',
-    'stripper_pole', 'stroking_own_chin', 'strong', 'strong_zero', 'strongman_waist', 'struggling', 'stubble', 'stuck',
-    'stud_earrings', 'studded_belt', 'studded_bracelet', 'studded_choker', 'studded_collar', 'studded_gloves', 'studying', 'stuffed_animal',
-    'stuffed_bird', 'stuffed_cat', 'stuffed_dog', 'stuffed_fish', 'stuffed_frog', 'stuffed_panda', 'stuffed_penguin', 'stuffed_rabbit',
-    'stuffed_shark', 'stuffed_sheep', 'stuffed_toy', 'stuffed_unicorn', 'stuffed_whale', 'stuffed_winged_unicorn', 'stuffing', 'style_parody',
-    'stylus', 'submachine_gun', 'submarine', 'submerged', 'submission_hold', 'subscribestar_username', 'subtitled', 'sucking_male_nipple',
-    'suction_cups', 'sugar_cube', 'suggestive_fluid', 'sugoi_dekai', 'suicide', 'suikawari', 'suit', 'suit_jacket',
-    'suitcase', 'sukajan', 'sukeban', 'sukusuku_hakutaku', 'summer', 'summer_festival', 'summer_pockets_school_uniform', 'summer_uniform',
-    'sun', 'sun_hat', 'sun_symbol', 'sunbeam', 'sunburst', 'sunburst_background', 'sundae', 'sundress',
-    'suneate', 'sunflower', 'sunflower_field', 'sunflower_hair_ornament', 'sunglasses', 'sunlight', 'sunrise', 'sunscreen',
-    'sunset', 'super_crown', 'super_mushroom', 'super_robot', 'super_saiyan', 'super_saiyan_1', 'super_saiyan_2', 'super_saiyan_4',
-    'super_saiyan_blue', 'super_soaker', 'super_star_(mario)', 'superhero_costume', 'suppressor', 'surcoat', 'surfboard', 'surfing',
-    'surgical_mask', 'surprise_kiss', 'surprised', 'surprised_arms', 'surreal', 'surrounded', 'surrounded_by_penises', 'survey_corps_(emblem)',
-    'sushi', 'suspended_congress', 'suspender_shorts', 'suspender_skirt', 'suspenders', 'suspenders_pull', 'suspenders_slip', 'suspension',
-    'swallowing', 'swan', 'swastika', 'sway_back', 'sweat', 'sweatband', 'sweatdrop', 'sweater',
-    'sweater_around_waist', 'sweater_dress', 'sweater_jacket', 'sweater_lift', 'sweater_pull', 'sweater_tucked_in', 'sweater_vest', 'sweatpants',
-    'sweaty_armpits', 'sweaty_clothes', 'sweeping', 'sweet_lolita', 'sweet_potato', 'sweets', 'swept_bangs', 'swim_briefs',
-    'swim_cap', 'swim_ring', 'swim_trunks', 'swimming', 'swimsuit', 'swimsuit_aside', 'swimsuit_cover-up', 'swimsuit_skirt',
-    'swimsuit_under_clothes', 'swing', 'swing_set', 'swinging', 'swirl', 'swirl_lollipop', 'swiss_roll', 'swivel_chair',
-    'sword', 'sword_behind_back', 'sword_of_hisou', 'sword_on_back', 'sword_over_shoulder', 'symbol-shaped_pupils', 'symbol_in_eye', 'symbolism',
-    'symmetrical_docking', 'symmetrical_pose', 'symmetry', 'syringe', 'syrup', 't-shirt', 'tabard', 'tabi',
-    'table', 'table_humping', 'table_tennis_paddle', 'tablecloth', 'tablet_pc', 'tacet_mark_(wuthering_waves)', 'tachi-e', 'tactical_clothes',
-    'tactile_paving', 'tag', 'taichou_haori', 'taiko_drum', 'tail', 'tail_around_own_leg', 'tail_bell', 'tail_between_legs',
-    'tail_bow', 'tail_censor', 'tail_grab', 'tail_ornament', 'tail_piercing', 'tail_raised', 'tail_ribbon', 'tail_ring',
-    'tail_through_clothes', 'tail_wagging', 'tail_wrap', 'tailcoat', 'tailjob', 'taimanin_suit', 'taiyaki', 'take_your_pick',
-    'takeuchi_takashi_(style)', 'taking_picture', 'taking_shelter', 'tako-san_wiener', 'takoyaki', 'talisman', 'talking', 'talking_on_phone',
-    'tall', 'tall_female', 'tall_grass', 'tall_hair', 'tally', 'talons', 'tam_o\'_shanter', 'tamagoyaki',
-    'tambourine', 'tan', 'tanabata', 'tanghulu', 'tangzhuang', 'tank', 'tank_helmet', 'tank_shell',
-    'tank_top', 'tank_turret', 'tankini', 'tanlines', 'tantou', 'tantrum', 'tanuki', 'tanzaku',
-    'tape', 'tape_bondage', 'tape_gag', 'tape_measure', 'tape_on_nipples', 'tapir_tail', 'tareme', 'target',
-    'tarot', 'tarot_(medium)', 'tarot_card', 'tart_(food)', 'tassel', 'tassel_earrings', 'tassel_hair_ornament', 'tasting',
-    'tasuki', 'tatami', 'tate_eboshi', 'tattoo', 'taur', 'taut_clothes', 'taut_dress', 'taut_leotard',
-    'taut_shirt', 'taut_swimsuit', 'tea', 'tea_set', 'teacher', 'teacher_and_student', 'teacup', 'team_9_(touhou)',
-    'team_magma', 'team_rocket', 'team_rocket_uniform', 'team_skull', 'teamwork', 'teamwork_(sexual)', 'teapot', 'teardrop',
-    'teardrop_earrings', 'teardrop_facial_mark', 'teardrop_tattoo', 'tearing_clothes', 'tearing_up', 'tears', 'teasing', 'teddy_bear',
-    'teeth', 'teeth_hold', 'tegaki', 'telekinesis', 'telescope', 'television', 'telstar', 'temari_ball',
-    'temple', 'tempura', 'tendril', 'tenga', 'tengu', 'tengu-geta', 'tengu_mask', 'tennis',
-    'tennis_ball', 'tennis_court', 'tennis_racket', 'tennis_uniform', 'tent', 'tentacle_grab', 'tentacle_hair', 'tentacle_pit',
-    'tentacle_sex', 'tentacles', 'tentacles_on_male', 'tentacles_under_clothes', 'tented_shirt', 'teruterubouzu', 'test_plugsuit', 'test_tube',
-    'testicle_grab', 'testicle_peek', 'testicle_sucking', 'testicles', 'text-only_page', 'text_background', 'text_focus', 'text_in_eyes',
-    'text_messaging', 'text_print', 'thai_text', 'thank_you', 'the_pose', 'theft', 'themed_object', 'thermometer',
-    'thermos', 'they_had_lots_of_sex_afterwards_(meme)', 'thick_arm_hair', 'thick_arms', 'thick_beard', 'thick_chest_hair', 'thick_eyebrows', 'thick_eyelashes',
-    'thick_leg_hair', 'thick_lips', 'thick_mustache', 'thick_navel_hair', 'thick_thighs', 'thigh_belt', 'thigh_boots', 'thigh_cutout',
-    'thigh_gap', 'thigh_grab', 'thigh_holster', 'thigh_pouch', 'thigh_ribbon', 'thigh_sex', 'thigh_straddling', 'thigh_strap',
-    'thighband_pantyhose', 'thighhighs', 'thighhighs_over_pantyhose', 'thighhighs_pull', 'thighhighs_under_boots', 'thighlet', 'thighs', 'thinking',
-    'third_eye', 'thong', 'thong_aside', 'thong_bikini', 'thong_leotard', 'thorns', 'thought_bubble', 'thread',
-    'three-dimensional_maneuver_gear', 'three_quarter_profile', 'three_quarter_view', 'threesome', 'throat_bulge', 'throat_microphone', 'throne', 'through_clothes',
-    'through_medium', 'through_screen', 'through_wall', 'throwing', 'throwing_knife', 'thrusters', 'thumb_ring', 'thumb_sucking',
-    'thumbs_down', 'thumbs_up', 'tiara', 'ticket', 'tickling', 'tickling_armpits', 'tickling_feet', 'tickling_sides',
-    'tie_clip', 'tied_ears', 'tied_jacket', 'tied_shirt', 'tied_sleeves', 'tied_to_chair', 'tied_up_(nonsexual)', 'tiefling',
-    'tiered_tray', 'tiger', 'tiger_boy', 'tiger_costume', 'tiger_cub', 'tiger_ears', 'tiger_girl', 'tiger_i',
-    'tiger_print', 'tiger_stripes', 'tiger_tail', 'tight_clothes', 'tight_dress', 'tight_pants', 'tight_shirt', 'tile_ceiling',
-    'tile_floor', 'tile_roof', 'tile_wall', 'tiles', 'tilted_headwear', 'time_paradox', 'time_stop', 'timestamp',
-    'tinted_eyewear', 'tiptoes', 'tissue', 'tissue_box', 'title', 'title_parody', 'to_be_continued', 'toast',
-    'toast_in_mouth', 'toasting_(gesture)', 'toddlercon', 'toe_cleavage', 'toe_ring', 'toe_scrunch', 'toeless_footwear', 'toeless_legwear',
-    'toenail_polish', 'toenails', 'toes', 'tofu', 'toga', 'toggles', 'toilet', 'toilet_paper',
-    'toilet_stall', 'toilet_use', 'tokin_hat', 'tokisadame_school_uniform', 'tokiwadai_school_gym_uniform', 'tokiwadai_school_uniform', 'tokkuri', 'tokusatsu',
-    'tokyo-3_middle_school_uniform', 'tokyo_(city)', 'tokyo_big_sight', 'tomato', 'tomato_slice', 'tomboy', 'tombstone', 'tomoe_(symbol)',
-    'tomoeda_elementary_school_uniform', 'toned', 'toned_female', 'toned_male', 'tonfa', 'tongs', 'tongue', 'tongue_out',
-    'tongue_piercing', 'too_literal', 'too_many', 'too_many_cats', 'too_many_frills', 'too_many_watermarks', 'toolbox', 'tools',
-    'toon_(style)', 'tooth', 'tooth_earrings', 'tooth_necklace', 'toothbrush', 'toothbrush_in_mouth', 'toothpaste', 'toothpick',
-    'top-down_bottom-up', 'top_hat', 'topknot', 'topless', 'topless_male', 'torch', 'torii', 'toriyama_akira_(style)',
-    'torn', 'torn_bike_shorts', 'torn_bikini', 'torn_bodystocking', 'torn_bodysuit', 'torn_cape', 'torn_cloak', 'torn_clothes',
-    'torn_coat', 'torn_dress', 'torn_gloves', 'torn_hat', 'torn_jacket', 'torn_jeans', 'torn_leotard', 'torn_panties',
-    'torn_pants', 'torn_pantyhose', 'torn_scarf', 'torn_shirt', 'torn_shorts', 'torn_skirt', 'torn_sleeves', 'torn_socks',
-    'torn_sweater', 'torn_swimsuit', 'torn_thighhighs', 'torn_wings', 'torogao', 'torpedo', 'torpedo_launcher', 'torpedo_tubes',
-    'torso_grab', 'torture', 'tote_bag', 'tour_guide', 'towel', 'towel_around_neck', 'towel_around_waist', 'towel_on_head',
-    'tower', 'town', 'toy', 'toyota', 'tracen_school_uniform', 'tracen_swimsuit', 'tracen_training_uniform', 'track_and_field',
-    'track_jacket', 'track_pants', 'track_suit', 'track_uniform', 'trading_card', 'traditional_bowtie', 'traditional_chinese_text', 'traditional_halo',
-    'traditional_nun', 'traditional_youkai', 'traffic', 'traffic_baton', 'traffic_cone', 'traffic_light', 'traffic_mirror', 'train',
-    'train_conductor', 'train_interior', 'train_station', 'train_station_platform', 'training', 'training_bra', 'training_corps_(emblem)', 'trait_connection',
-    'transformation', 'translucent', 'translucent_bunnysuit', 'translucent_hair', 'transmission_tower', 'transparent', 'transparent_background', 'transparent_border',
-    'transparent_censoring', 'transparent_umbrella', 'transparent_wings', 'trapped', 'trash', 'trash_bag', 'trash_can', 'travel_attendant',
-    'tray', 'treasure', 'treasure_chest', 'treble_clef', 'tree', 'tree_horns', 'tree_shade', 'tree_stump',
-    'trefoil', 'trembling', 'trench_coat', 'tress_ribbon', 'tri_braids', 'tri_tails', 'triangle', 'triangle-shaped_pupils',
-    'triangle_earrings', 'triangle_facial_mark', 'triangle_hair_ornament', 'triangle_mouth', 'triangle_print', 'triangular_eyewear', 'triangular_headpiece', 'tribadism',
-    'tribal', 'tribal_tattoo', 'trick_or_treat', 'tricorne', 'trident', 'triforce', 'trigger_discipline', 'trigram',
-    'trinity_general_school_swimsuit', 'triple_penetration', 'triplets', 'tripod', 'tripping', 'troll_face', 'trolling', 'trophy',
-    'tropical_drink', 'tropical_fish', 'trowel', 'truck', 'trumpet', 'truth', 'trying_on_clothes', 'tsab_air_military_uniform',
-    'tsab_ground_military_uniform', 'tsuki_ni_kawatte_oshioki_yo', 'tsukinomori_school_uniform', 'tsumami_kanzashi', 'tsundere', 'tsurime', 'tuanshan', 'tube',
-    'tube_dress', 'tube_top', 'tucked_money', 'tucked_penis', 'tucking_hair', 'tulip', 'tulip_hat', 'tumblr_username',
-    'tuna', 'tunic', 'tunnel', 'tupet', 'turban', 'turkey_(food)', 'turn_pale', 'turnaround',
-    'turning_head', 'turntable', 'turtle', 'turtle_shell', 'turtleneck', 'turtleneck_bodysuit', 'turtleneck_dress', 'turtleneck_jacket',
-    'turtleneck_leotard', 'turtleneck_shirt', 'turtleneck_sweater', 'tusks', 'tutu', 'tuxedo', 'tweaking_own_nipple', 'twig',
-    'twilight', 'twin_braids', 'twin_drills', 'twincest', 'twins', 'twintails', 'twintails_day', 'twirling_hair',
-    'twisted_torso', 'twitching', 'twitching_penis', 'twitter_logo', 'twitter_strip_game', 'twitter_username', 'twitter_x_logo', 'two-finger_salute',
-    'two-footed_footjob', 'two-handed', 'two-handed_handjob', 'two-sided_cape', 'two-sided_cloak', 'two-sided_coat', 'two-sided_dress', 'two-sided_fabric',
-    'two-sided_headwear', 'two-sided_jacket', 'two-sided_skirt', 'two-tone_background', 'two-tone_bikini', 'two-tone_bodysuit', 'two-tone_bow', 'two-tone_bowtie',
-    'two-tone_cape', 'two-tone_coat', 'two-tone_dress', 'two-tone_eyes', 'two-tone_footwear', 'two-tone_fur', 'two-tone_gloves', 'two-tone_hair',
-    'two-tone_hairband', 'two-tone_hat', 'two-tone_headwear', 'two-tone_hoodie', 'two-tone_horns', 'two-tone_jacket', 'two-tone_kimono', 'two-tone_legwear',
-    'two-tone_leotard', 'two-tone_necktie', 'two-tone_one-piece_swimsuit', 'two-tone_panties', 'two-tone_pants', 'two-tone_ribbon', 'two-tone_scarf', 'two-tone_shirt',
-    'two-tone_shorts', 'two-tone_skin', 'two-tone_skirt', 'two-tone_sports_bra', 'two-tone_sweater', 'two-tone_swimsuit', 'two-tone_thighhighs', 'two-tone_veil',
-    'two-tone_vest', 'two-tone_wings', 'two_side_up', 'two_tails', 'tying', 'tying_hair', 'typing', 'typo',
-    'tyrannosaurus_rex', 'u.a._school_uniform', 'u.n._spacy', 'u_u', 'uchikake', 'uchiwa', 'udon', 'ufo',
-    'ugly_man', 'ukiyo-e', 'ultra_ball', 'umbrella', 'umbrella_over_shoulder', 'unaligned_breasts', 'unamused', 'unbuttoned',
-    'unbuttoned_shirt', 'uncensored', 'uncle_and_niece', 'uncommon_stimulation', 'unconscious', 'unconventional_maid', 'undead', 'under-rim_eyewear',
-    'under_covers', 'under_kotatsu', 'under_table', 'under_tree', 'underboob', 'underboob_cutout', 'underbust', 'underbutt',
-    'undercut', 'underground', 'underlighting', 'underpec', 'undershirt', 'undersized_animal', 'undersized_breast_cup', 'undersized_clothes',
-    'undersuit', 'underwater', 'underwear', 'underwear_only', 'underwear_writing', 'underworld_(ornament)', 'undone_bra', 'undone_neck_ribbon',
-    'undone_neckerchief', 'undone_necktie', 'undone_sarashi', 'undressing', 'undressing_another', 'uneven_eyes', 'uneven_footwear', 'uneven_gloves',
-    'uneven_horns', 'uneven_legwear', 'uneven_sleeves', 'uneven_twintails', 'unfastened', 'unhappy', 'unicorn', 'union_jack',
-    'unitard', 'united_states', 'unkempt', 'unmoving_pattern', 'unsheathed', 'unsheathing', 'untied_bikini', 'untied_bikini_top',
-    'untied_footwear', 'untied_panties', 'untucked_shirt', 'untying', 'unused_tire', 'unusually_open_eyes', 'unworn_backpack', 'unworn_bag',
-    'unworn_bikini', 'unworn_bikini_bottom', 'unworn_bikini_top', 'unworn_boots', 'unworn_bowtie', 'unworn_bra', 'unworn_cape', 'unworn_clothes',
-    'unworn_coat', 'unworn_crown', 'unworn_dress', 'unworn_eyepatch', 'unworn_eyewear', 'unworn_footwear', 'unworn_gag', 'unworn_gloves',
-    'unworn_goggles', 'unworn_hair_ornament', 'unworn_hairband', 'unworn_hat', 'unworn_headwear', 'unworn_helmet', 'unworn_jacket', 'unworn_jewelry',
-    'unworn_legwear', 'unworn_mask', 'unworn_necklace', 'unworn_necktie', 'unworn_panties', 'unworn_pants', 'unworn_sandals', 'unworn_scarf',
-    'unworn_shirt', 'unworn_shoes', 'unworn_shorts', 'unworn_skirt', 'unworn_slippers', 'unworn_socks', 'unworn_swimsuit', 'unworn_thighhighs',
-    'unzipped', 'unzipping', 'updo', 'upper_body', 'upper_teeth_only', 'uppercut', 'upright_straddle', 'upshirt',
-    'upshorts', 'upside-down', 'upskirt', 'upturned_eyes', 'uranohoshi_school_uniform', 'urban', 'urethra', 'urethral_insertion',
-    'urinal', 'usb', 'used_condom', 'used_condom_on_penis', 'used_tissue', 'usekh_collar', 'user_interface', 'ushanka',
-    'utaite', 'utensil_in_mouth', 'uterus', 'utility_belt', 'utility_pole', 'uu~', 'uva_academy_school_uniform', 'uvula',
-    'uwabaki', 'v', 'v-fin', 'v-neck', 'v-shaped_eyebrows', 'v-shaped_eyes', 'v-taper', 'v4x',
-    'v_arms', 'v_legs', 'v_over_eye', 'v_over_mouth', 'vacuum_cleaner', 'vaginal', 'vaginal_object_insertion', 'valentine',
-    'valkyrie', 'vambraces', 'vampire', 'vampire_costume', 'van', 'vanishing_point', 'varia_suit', 'variable_fighter',
-    'variations', 'vase', 'vaulting_horse', 'vegetable', 'vehicle_and_personification', 'vehicle_focus', 'vehicle_interior', 'vehicle_name',
-    'veil', 'veins', 'veiny_arms', 'veiny_breasts', 'veiny_hands', 'veiny_penis', 'vending_machine', 'venus_symbol',
-    'veranda', 'vertical-striped_bikini', 'vertical-striped_bra', 'vertical-striped_clothes', 'vertical-striped_dress', 'vertical-striped_headwear', 'vertical-striped_jacket', 'vertical-striped_kimono',
-    'vertical-striped_panties', 'vertical-striped_pants', 'vertical-striped_pantyhose', 'vertical-striped_shirt', 'vertical-striped_shorts', 'vertical-striped_skirt', 'vertical-striped_sleeves', 'vertical-striped_socks',
-    'vertical-striped_thighhighs', 'vertical-striped_vest', 'vertical_foregrip', 'very_dark_skin', 'very_hairy', 'very_long_beard', 'very_long_fingernails', 'very_long_hair',
-    'very_long_sleeves', 'very_long_tongue', 'very_short_hair', 'very_sweaty', 'very_wide_shot', 'vest', 'vest_lift', 'vial',
-    'vibrator', 'vibrator_cord', 'vibrator_in_thigh_strap', 'vibrator_in_thighhighs', 'vibrator_on_nipple', 'vibrator_under_clothes', 'vibrator_under_panties', 'victorian',
-    'victorian_maid', 'video_camera', 'video_game', 'video_game_cover', 'viera', 'viewer_holding_leash', 'viewer_on_leash', 'viewfinder',
-    'vignetting', 'village', 'vines', 'violence', 'violin', 'virgin', 'virgin_destroyer_sweater', 'virgin_killer_outfit',
-    'virgin_killer_sweater', 'virtual_youtuber', 'visible_air', 'vision_(genshin_impact)', 'visor_(armor)', 'visor_cap', 'visual_novel', 'vocaloid_append',
-    'vodka', 'voice_actor', 'voice_actor_connection', 'voile', 'volcano', 'volleyball', 'volleyball_(object)', 'volleyball_net',
-    'volleyball_uniform', 'vomit', 'vomiting', 'vore', 'voyeurism', 'w', 'w_arms', 'w_over_eye',
-    'wa_lolita', 'wa_maid', 'wading', 'wading_pool', 'wafer_stick', 'waffle', 'wagashi', 'waist_apron',
-    'waist_bow', 'waist_cape', 'waist_hug', 'waist_ribbon', 'waist_sash', 'waistcoat', 'waiter', 'waitress',
-    'wakamezake', 'waking_up', 'wakizashi', 'walk-in', 'walker_(robot)', 'walkie-talkie', 'walking', 'walking_away',
-    'walking_on_liquid', 'wall-eyed', 'wall_clock', 'wall_lamp', 'wall_of_text', 'wallet', 'wallpaper_(object)', 'walther',
-    'wand', 'wanted_poster', 'war', 'war_hammer', 'waraji', 'wardrobe_error', 'wardrobe_malfunction', 'wariza',
-    'warning_sign', 'warrior', 'warship', 'washing', 'washing_hair', 'washing_machine', 'wataboushi', 'watch',
-    'watching', 'watching_television', 'water', 'water_bottle', 'water_drop', 'water_gun', 'water_lily_flower', 'water_slide',
-    'water_yoyo', 'watercraft', 'waterfall', 'watering_can', 'watermark', 'watermark_grid', 'watermelon', 'watermelon_bar',
-    'watermelon_slice', 'watson_cross', 'waves', 'waving', 'waving_arm', 'waving_arms', 'wavy_eyes', 'wavy_hair',
-    'wavy_mouth', 'wax_seal', 'weapon', 'weapon_bag', 'weapon_behind_back', 'weapon_case', 'weapon_focus', 'weapon_on_back',
-    'weapon_over_shoulder', 'weasel_ears', 'weasel_girl', 'weasel_tail', 'web_address', 'webbed_hands', 'wedding', 'wedding_dress',
-    'wedding_ring', 'wedge_heels', 'wedgie', 'weibo_logo', 'weibo_watermark', 'weighing_scale', 'weight_conscious', 'weightlifting',
-    'weights', 'welsh_corgi', 'werewolf', 'western_comics_(style)', 'western_dragon', 'wet', 'wet_clothes', 'wet_dress',
-    'wet_face', 'wet_floor', 'wet_hair', 'wet_panties', 'wet_shirt', 'wet_skirt', 'wet_swimsuit', 'wet_towel',
-    'wetsuit', 'whale', 'whale_hair_ornament', 'whale_hat', 'whale_tail_(clothing)', 'what', 'wheat', 'wheat_field',
-    'wheel', 'wheelbarrow', 'wheelchair', 'when_you_see_it', 'whip', 'whip_marks', 'whip_sword', 'whipped_cream',
-    'whisk', 'whisker_markings', 'whiskers', 'whiskey', 'whispering', 'whistle', 'whistle_around_neck', 'whistling',
-    'white-framed_eyewear', 'white_apron', 'white_arm_warmers', 'white_armband', 'white_armor', 'white_ascot', 'white_babydoll', 'white_background',
-    'white_bag', 'white_bandana', 'white_bandeau', 'white_belt', 'white_bikini', 'white_bird', 'white_bloomers', 'white_bodysuit',
-    'white_border', 'white_bow', 'white_bowtie', 'white_bra', 'white_bridal_gauntlets', 'white_butterfly', 'white_camisole', 'white_cape',
-    'white_capelet', 'white_cardigan', 'white_cat', 'white_choker', 'white_cloak', 'white_coat', 'white_collar', 'white_corset',
-    'white_day', 'white_dog', 'white_dress', 'white_eyelashes', 'white_eyes', 'white_feathers', 'white_flag', 'white_flower',
-    'white_footwear', 'white_fur', 'white_garter_belt', 'white_garter_straps', 'white_gloves', 'white_hair', 'white_hairband', 'white_hakama',
-    'white_halo', 'white_hanfu', 'white_hat', 'white_headband', 'white_headdress', 'white_helmet', 'white_hood', 'white_hoodie',
-    'white_horns', 'white_jacket', 'white_jumpsuit', 'white_kimono', 'white_leg_warmers', 'white_leggings', 'white_leotard', 'white_lily',
-    'white_male_underwear', 'white_mask', 'white_mittens', 'white_mouth', 'white_nails', 'white_neckerchief', 'white_necktie', 'white_nightgown',
-    'white_one-piece_swimsuit', 'white_outline', 'white_pajamas', 'white_panties', 'white_pants', 'white_pantyhose', 'white_petals', 'white_pubic_hair',
-    'white_pupils', 'white_rabbit_(animal)', 'white_ribbon', 'white_robe', 'white_romper', 'white_rose', 'white_sailor_collar', 'white_sarong',
-    'white_sash', 'white_scales', 'white_scarf', 'white_scrunchie', 'white_serafuku', 'white_shawl', 'white_shirt', 'white_shorts',
-    'white_shrug', 'white_skin', 'white_skirt', 'white_sky', 'white_sleeve_cuffs', 'white_sleeves', 'white_slingshot_swimsuit', 'white_snake',
-    'white_sneakers', 'white_socks', 'white_sports_bra', 'white_stripes', 'white_suit', 'white_sweater', 'white_tail', 'white_tank_top',
-    'white_theme', 'white_thighhighs', 'white_tiger', 'white_trim', 'white_tube_top', 'white_tunic', 'white_umbrella', 'white_undershirt',
-    'white_veil', 'white_vest', 'white_wings', 'white_wrist_cuffs', 'whiteboard', 'wide-eyed', 'wide_brim', 'wide_face',
-    'wide_hips', 'wide_oval_eyes', 'wide_ponytail', 'wide_shot', 'wide_sleeves', 'wide_spread_legs', 'widow\'s_peak', 'wife_and_wife',
-    'wiffle_gag', 'wig', 'wince', 'wind', 'wind_chime', 'wind_lift', 'wind_turbine', 'winding_key',
-    'windmill', 'window', 'window_(computing)', 'window_blinds', 'window_shadow', 'windowsill', 'windsock', 'wine',
-    'wine_bottle', 'wine_glass', 'wing_brooch', 'wing_collar', 'wing_ears', 'wing_hair_ornament', 'wing_ornament', 'winged_arms',
-    'winged_footwear', 'winged_hair_ornament', 'winged_halo', 'winged_hat', 'winged_heart', 'winged_heart_tattoo', 'winged_helmet', 'wings',
-    'winking_(animated)', 'winter', 'winter_clothes', 'winter_coat', 'winter_uniform', 'wiping', 'wiping_face', 'wiping_mouth',
-    'wiping_sweat', 'wiping_tears', 'wire', 'wireless_earphones', 'wispy_bangs', 'wisteria', 'witch', 'witch\'s_labyrinth',
-    'witch_(madoka_magica)', 'witch_hat', 'wizard', 'wizard_hat', 'wok', 'wolf', 'wolf_boy', 'wolf_costume',
-    'wolf_cut', 'wolf_ears', 'wolf_girl', 'wolf_paws', 'wolf_tail', 'wooden_bench', 'wooden_box', 'wooden_bucket',
-    'wooden_chair', 'wooden_fence', 'wooden_floor', 'wooden_horse', 'wooden_spoon', 'wooden_sword', 'wooden_table', 'wooden_wall',
-    'wool', 'world_war_ii', 'worldwide_miku', 'worm', 'worried', 'wrapped_candy', 'wrapped_up', 'wreath',
-    'wreckage', 'wrench', 'wrestling', 'wrestling_mask', 'wrestling_outfit', 'wrestling_ring', 'wringing_clothes', 'wrinkled_skin',
-    'wrist_belt', 'wrist_bow', 'wrist_cuffs', 'wrist_cutting', 'wrist_flower', 'wrist_guards', 'wrist_ribbon', 'wrist_scrunchie',
-    'wrist_straps', 'wrist_wrap', 'wristband', 'wristwatch', 'writing', 'wrong_foot', 'wyvern', 'x',
-    'x-ray', 'x-shaped_pupils', 'x3', 'x_arms', 'x_fingers', 'x_hair_ornament', 'x_x', 'xd',
-    'xiangyun', 'xiao_guan_(headdress)', 'y2k_fashion', 'yagasuri', 'yakisoba', 'yami_kawaii', 'yandere', 'yandere_trance',
-    'yaoi', 'yaranaika', 'yarn', 'yarn_ball', 'yasogami_school_uniform', 'yatai', 'yawning', 'year_of_the_dog',
-    'year_of_the_dragon', 'year_of_the_ox', 'year_of_the_pig', 'year_of_the_rabbit', 'year_of_the_rat', 'year_of_the_rooster', 'year_of_the_tiger', 'yellow-framed_eyewear',
-    'yellow-tinted_eyewear', 'yellow_apron', 'yellow_armband', 'yellow_armor', 'yellow_ascot', 'yellow_background', 'yellow_bag', 'yellow_bandana',
-    'yellow_belt', 'yellow_bikini', 'yellow_bodysuit', 'yellow_border', 'yellow_bow', 'yellow_bowtie', 'yellow_bra', 'yellow_butterfly',
-    'yellow_camisole', 'yellow_cape', 'yellow_capelet', 'yellow_cardigan', 'yellow_choker', 'yellow_cloak', 'yellow_coat', 'yellow_dress',
-    'yellow_eyes', 'yellow_feathers', 'yellow_flower', 'yellow_footwear', 'yellow_fur', 'yellow_gemstone', 'yellow_gloves', 'yellow_hairband',
-    'yellow_halo', 'yellow_hat', 'yellow_headband', 'yellow_hoodie', 'yellow_horns', 'yellow_jacket', 'yellow_jumpsuit', 'yellow_kimono',
-    'yellow_leotard', 'yellow_lips', 'yellow_nails', 'yellow_neckerchief', 'yellow_necktie', 'yellow_one-piece_swimsuit', 'yellow_outline', 'yellow_panties',
-    'yellow_pants', 'yellow_pantyhose', 'yellow_pupils', 'yellow_raincoat', 'yellow_ribbon', 'yellow_rose', 'yellow_sailor_collar', 'yellow_sash',
-    'yellow_scarf', 'yellow_sclera', 'yellow_scrunchie', 'yellow_shirt', 'yellow_shorts', 'yellow_skin', 'yellow_skirt', 'yellow_sky',
-    'yellow_sleeves', 'yellow_socks', 'yellow_sweater', 'yellow_sweater_vest', 'yellow_tail', 'yellow_tank_top', 'yellow_teeth', 'yellow_theme',
-    'yellow_thighhighs', 'yellow_trim', 'yellow_umbrella', 'yellow_vest', 'yellow_wings', 'yen_sign', 'yes', 'yes-no_pillow',
-    'yin_yang', 'yin_yang_orb', 'yin_yang_print', 'yo-yo', 'yoga', 'yoga_pants', 'yokosuka_girls_marine_high_school_uniform', 'yokozuwari',
-    'yordle', 'you\'re_doing_it_wrong', 'you_gonna_get_raped', 'youkai_(youkai_watch)', 'youtou_high_school_uniform', 'yugake', 'yuigaoka_school_uniform', 'yukata',
-    'yuki_onna', 'yukkuri_shiteitte_ne', 'yume_kawaii', 'yumenosaki_school_uniform', 'yumi_(bow)', 'yunomi', 'yuri', 'yurigaoka_girls_academy_school_uniform',
-    'yuyushiki\'s_school_uniform', 'z-ring', 'z_saber', 'zabuton', 'zebra_print', 'zenra', 'zentradi', 'zeon',
-    'zero_gravity', 'zero_suit', 'zettai_ryouiki', 'zipper', 'zipper_dress', 'zipper_pull_tab', 'zipper_skirt', 'zodiac',
-    'zombie', 'zombie_pose', 'zoom_layer', 'zora', 'zouri', 'zun_(style)', 'zzz', '|_|'
-]);
-
-// Alias corrections (extracted from danbooru - maps common variations to canonical booru tags)
-const TAG_ALIASES = {
-    '!!!': '!!',
-    '!!!!': '!!',
-    '!!?': '!?',
-    '!?!': '!?',
-    '(9)': 'circled_9',
-    '(o)_(o)': 'solid_circle_pupils',
-    '.3.': 'o3o',
-    '1boys': '1boy',
-    '1draw': 'one-hour_drawing_challenge',
-    '1girls': '1girl',
-    '1panel': '1koma',
-    '2_girls': '2girls',
-    '2boy': '2boys',
-    '2girl': '2girls',
-    '2girls1tub': 'shared_bathing',
-    '3boy': '3boys',
-    '3dcg': '3d',
-    '3dmg': 'three-dimensional_maneuver_gear',
-    '3finger_hand': 'fewer_digits',
-    '3girl': '3girls',
-    '3p': 'threesome',
-    '3rd_eye': 'third_eye',
-    '4-fingers_heart_hands': '4-finger_heart_hands',
-    '404_(girls_frontline)': '404_(girls\'_frontline)',
-    '4boy': '4boys',
-    '4coma': '4koma',
-    '4girl': '4girls',
-    '4th_wall': 'fourth_wall',
-    '50_yen_coin': 'holed_coin',
-    '5_yen_coin': 'holed_coin',
-    '5boy': '5boys',
-    '5girl': '5girls',
-    '6+boy': '6+boys',
-    '6+girl': '6+girls',
-    '6boy': '6+boys',
-    '6boys': '6+boys',
-    '6girl': '6+girls',
-    '6girls': '6+girls',
-    '6others': '6+others',
-    '70\'s': '1970s_(style)',
-    '70s': '1970s_(style)',
-    '7girls': '6+girls',
-    '80\'s': '1980s_(style)',
-    '80s': '1980s_(style)',
-    '8girls': '6+girls',
-    '90\'s': '1990s_(style)',
-    '90s': '1990s_(style)',
-    '9girls': '6+girls',
-    ':(': 'frown',
-    ':)': 'smile',
-    ':0': ':o',
-    ':9': ':q',
-    ':<>': 'diamond_mouth',
-    ':[]': 'rectangular_mouth',
-    ':\\': ':/',
-    ':b': ':p',
-    ':{': 'frown',
-    ':}': 'smile',
-    '<3': 'heart',
-    '<o><o>': '<o>_<o>',
-    '=3': 'puff_of_air',
-    '><': '>_<',
-    '?!': '!?',
-    '?!!': '!?',
-    '???': '??',
-    '^^': '^_^',
-    'a/c': 'air_conditioner',
-    'a_master_is_out': 'peeking_out',
-    'aa_gun': 'anti-aircraft_gun',
-    'about_to_be_raped': 'imminent_rape',
-    'absolute_cleavage': 'center_opening',
-    'absolute_territory': 'zettai_ryouiki',
-    'aburage': 'aburaage',
-    'ace': 'ace_(playing_card)',
-    'acorns': 'acorn',
-    'acoustic_piano': 'piano',
-    'adapted_outfit': 'adapted_costume',
-    'adjusting_glasses': 'adjusting_eyewear',
-    'adjusting_hat': 'adjusting_headwear',
-    'adjusting_pantyhose': 'adjusting_legwear',
-    'adjusting_sunglasses': 'adjusting_eyewear',
-    'adjusting_thighhigh': 'adjusting_legwear',
-    'adjusting_thighhighs': 'adjusting_legwear',
-    'adonis_belt': 'groin',
-    'advertisement': 'ad',
-    'advertising': 'ad',
-    'aerial_view': 'from_above',
-    'aeroplane': 'airplane',
-    'afraid': 'scared',
-    'african_wild_dog_ears': 'dog_ears',
-    'african_wild_dog_tail': 'dog_tail',
-    'after-school_tea_time': 'ho-kago_tea_time',
-    'after_bath': 'after_bathing',
-    'after_blowjob': 'after_fellatio',
-    'after_shower': 'after_bathing',
-    'aftersex': 'after_sex',
-    'age': 'character_age',
-    'age_rating': 'content_rating',
-    'agent_3': 'squidbeak_splatoon',
-    'agura': 'indian_style',
-    'aiguillettes': 'aiguillette',
-    'air_kiss': 'blowing_kiss',
-    'air_punch': 'raised_fist',
-    'aircon': 'air_conditioner',
-    'airplanes': 'airplane',
-    'airships': 'airship',
-    'akimbo': 'hands_on_own_hips',
-    'al_bhed_eyes': '@_@',
-    'album': 'album_cover',
-    'alcohol_between_breasts': 'bust_cup',
-    'all-fours': 'all_fours',
-    'all_rights_reserved': 'copyright_notice',
-    'alligator_tail': 'crocodilian_tail',
-    'almost_kiss': 'imminent_kiss',
-    'aloha_shirt': 'hawaiian_shirt',
-    'alphonse_mucha_(style)': 'art_nouveau',
-    'alternate_colors': 'alternate_color',
-    'alternate_costume_(official)': 'official_alternate_costume',
-    'alternate_hair_length_(official)': 'official_alternate_hair_length',
-    'alternate_hair_style': 'alternate_hairstyle',
-    'alternate_haircolor': 'alternate_hair_color',
-    'alternate_hairstyle_(official)': 'official_alternate_hairstyle',
-    'alternate_hat': 'alternate_headwear',
-    'alternate_outfit': 'alternate_costume',
-    'alternate_race': 'alternate_species',
-    'alternative_color': 'alternate_color',
-    'alternative_costume': 'alternate_costume',
-    'alternative_eye_color': 'alternate_eye_color',
-    'alternative_form': 'alternate_form',
-    'alternative_hair_color': 'alternate_hair_color',
-    'alternative_hair_length': 'alternate_hair_length',
-    'alternative_hair_style': 'alternate_hairstyle',
-    'alternative_hairstyle': 'alternate_hairstyle',
-    'alternative_hat': 'alternate_headwear',
-    'alternative_headwear': 'alternate_headwear',
-    'alternative_weapon': 'alternate_weapon',
-    'alternative_wings': 'alternate_wings',
-    'amber_eyes': 'yellow_eyes',
-    'ambiguous_white_liquid': 'suggestive_fluid',
-    'america': 'united_states',
-    'america_(country)': 'united_states',
-    'amethyst_(gemstone)': 'purple_gemstone',
-    'ammo': 'ammunition',
-    'ammo_belt': 'ammunition_belt',
-    'ammo_box': 'ammunition_box',
-    'ammo_pouch': 'ammunition_pouch',
-    'ammunition_magazine': 'magazine_(weapon)',
-    'amp': 'amplifier',
-    'amplifier_(instrument)': 'amplifier',
-    'anal_insertion': 'anal_object_insertion',
-    'anal_nakadashi': 'cum_in_ass',
-    'anal_object_push': 'anal_object_insertion',
-    'anal_penetration': 'anal',
-    'anal_plug': 'butt_plug',
-    'anal_sex': 'anal',
-    'analbeads': 'anal_beads',
-    'analingus': 'anilingus',
-    'analog_piano': 'piano',
-    'androgyny': 'androgynous',
-    'angel_costume': 'angel',
-    'angels': 'angel',
-    'anger': 'angry',
-    'anger_mark': 'anger_vein',
-    'animal_backpack': 'animal_bag',
-    'animal_band_legwear': 'animal_ear_legwear',
-    'animal_ear_bow': 'ear_ribbon',
-    'animal_paws': 'animal_hands',
-    'animal_pelt': 'pelt',
-    'animal_robot': 'robot_animal',
-    'animal_tail': 'tail',
-    'animal_tails': 'multiple_tails',
-    'animalisation': 'animalization',
-    'animalprint': 'animal_print',
-    'animals': 'animal',
-    'anime_in_real_life': 'photo_background',
-    'ankle_bracelet': 'anklet',
-    'ankle_bracelets': 'anklet',
-    'ankle_lace_up': 'ankle_lace-up',
-    'ankle_wraps': 'ankle_wrap',
-    'anklets': 'anklet',
-    'annilingus': 'anilingus',
-    'antenna': 'antennae',
-    'antennae_hair': 'antenna_hair',
-    'anthro': 'furry',
-    'anthropomorphism': 'personification',
-    'anti-material_rifle': 'anti-materiel_rifle',
-    'anti-tank_rifle': 'anti-materiel_rifle',
-    'anti_material_rifle': 'anti-materiel_rifle',
-    'anti_materiel_rifle': 'anti-materiel_rifle',
-    'antichrist_cross': 'inverted_cross',
-    'antique_telephone': 'antique_phone',
-    'ants': 'ant',
-    'anus_spread': 'spread_anus',
-    'anus_spreading': 'spread_anus',
-    'apology': 'apologizing',
-    'appearance_connection': 'look-alike',
-    'apples': 'apple',
-    'aqua_blouse': 'aqua_shirt',
-    'aqua_earrings': 'earrings',
-    'aqua_eyelashes': 'colored_eyelashes',
-    'aqua_eyepatch': 'colored_eyepatch',
-    'aqua_fingernails': 'aqua_nails',
-    'aqua_lipstick': 'aqua_lips',
-    'aqua_shoes': 'aqua_footwear',
-    'aran_jumper': 'aran_sweater',
-    'archangel': 'angel',
-    'areolae_slip': 'areola_slip',
-    'argyle_clothing': 'argyle_clothes',
-    'arigatou': 'thank_you',
-    'arm_around_another\'s_arm': 'locked_arms',
-    'arm_band': 'armband',
-    'arm_bracelets': 'armlet',
-    'arm_guard': 'arm_guards',
-    'arm_holding': 'holding_another\'s_arm',
-    'arm_in_arm': 'locked_arms',
-    'arm_in_one_sleeve': 'arm_out_of_sleeve',
-    'arm_lock': 'locked_arms',
-    'arm_on_head': 'arm_on_own_head',
-    'arm_on_shoulder': 'arm_on_another\'s_shoulder',
-    'arm_outstretched': 'outstretched_arm',
-    'arm_raised': 'arm_up',
-    'arm_scar': 'scar_on_arm',
-    'arm_wings': 'winged_arms',
-    'arm_wraps': 'arm_wrap',
-    'armbands': 'armband',
-    'armguards': 'arm_guards',
-    'arming_doublet': 'gambeson',
-    'armlets': 'armlet',
-    'armour': 'armor',
-    'armoured_dress': 'armored_dress',
-    'armpit': 'armpits',
-    'armpit_holster': 'shoulder_holster',
-    'armpit_licking': 'licking_armpit',
-    'armpit_spreading': 'spread_armpit',
-    'armpit_tickling': 'tickling_armpits',
-    'arms_above': 'arms_up',
-    'arms_above_head': 'arms_up',
-    'arms_behind': 'arms_behind_back',
-    'arms_bound': 'bound_arms',
-    'arms_crossed': 'crossed_arms',
-    'arms_folded': 'crossed_arms',
-    'arms_linked': 'locked_arms',
-    'arms_outstretched': 'outstretched_arms',
-    'arms_raised': 'arms_up',
-    'arms_spread': 'spread_arms',
-    'arms_tied': 'bound_arms',
-    'armsleeves': 'detached_sleeves',
-    'armwarmers': 'arm_warmers',
-    'arrows': 'arrow_(projectile)',
-    'arthropod_legs': 'arthropod_limbs',
-    'artificial_arm': 'prosthetic_arm',
-    'artificial_leg': 'prosthetic_leg',
-    'artist_connection': 'creator_connection',
-    'artist_self_insert': 'artist_self-insert',
-    'artist_signature': 'signature',
-    'artist_twitter': 'twitter_username',
-    'asahi_(beer)': 'asahi_breweries',
-    'ashford_academy_uniform': 'ashford_academy_school_uniform',
-    'ashikoki': 'footjob',
-    'asleep': 'sleeping',
-    'ass-up_head-down': 'top-down_bottom-up',
-    'ass_crack': 'butt_crack',
-    'ass_fangs': 'ass_visible_through_thighs',
-    'ass_hole': 'anus',
-    'ass_to_ass': 'ass-to-ass',
-    'assertive': 'assertive_female',
-    'asshole': 'anus',
-    'assjob': 'buttjob',
-    'assless_panties': 'backless_panties',
-    'aster_(flower)': 'daisy',
-    'astronaut_helmet': 'space_helmet',
-    'asymmetric_bangs': 'asymmetrical_bangs',
-    'asymmetrical_clothing': 'asymmetrical_clothes',
-    'asymmetrical_earrings': 'mismatched_earrings',
-    'asymmetrical_footwear': 'uneven_footwear',
-    'asymmetrical_gloves': 'uneven_gloves',
-    'asymmetrical_legwear': 'uneven_legwear',
-    'asymmetrical_pupils': 'mismatched_pupils',
-    'asymmetrical_sleeves': 'uneven_sleeves',
-    'asymmetrical_twintails': 'uneven_twintails',
-    'attacking_viewer': 'incoming_attack',
-    'aubergine': 'eggplant',
-    'aurora_borealis': 'aurora',
-    'autograph': 'signature',
-    'aviator_glasses': 'aviator_sunglasses',
-    'ax': 'axe',
-    'b&w': 'greyscale',
-    'baby_bird': 'chick',
-    'back_boob': 'backboob',
-    'back_hug': 'hug_from_behind',
-    'back_opening': 'back_cutout',
-    'back_pack': 'backpack',
-    'back_seamed_legwear': 'back-seamed_legwear',
-    'back_to_back': 'back-to-back',
-    'background_people': 'people',
-    'background_text': 'text_background',
-    'backless': 'backless_outfit',
-    'backlit': 'backlighting',
-    'backpack_removed': 'unworn_backpack',
-    'backwards_sitting': 'sitting_backwards',
-    'badges': 'badge',
-    'bag_removed': 'unworn_bag',
-    'bags': 'bag',
-    'balance': 'balancing',
-    'balance_ball': 'exercise_ball',
-    'balance_scales': 'balance_scale',
-    'ball_and_chain': 'ball_and_chain_(weapon)',
-    'ball_braids': 'hair_bobbles',
-    'ball_caress': 'caressing_testicles',
-    'ball_joints': 'doll_joints',
-    'ball_licking': 'licking_testicle',
-    'ball_sucking': 'testicle_sucking',
-    'ballet_leotard': 'athletic_leotard',
-    'ballet_shoes': 'ballet_slippers',
-    'ballgag': 'ball_gag',
-    'balloons': 'balloon',
-    'balls': 'testicles',
-    'balls_deep': 'deep_penetration',
-    'bamboo-shafted_broom': 'bamboo_broom',
-    'bamboo_sprout': 'bamboo_shoot',
-    'bamboo_sword': 'shinai',
-    'bananas': 'banana',
-    'band': 'band_(music)',
-    'band-aid': 'bandaid',
-    'band_aids': 'bandaid',
-    'band_name': 'group_name',
-    'bandage': 'bandages',
-    'bandage_bra': 'sarashi',
-    'bandagebra': 'sarashi',
-    'bandaged_arms': 'bandaged_arm',
-    'bandaged_eye': 'bandage_over_one_eye',
-    'bandaged_feet': 'bandaged_foot',
-    'bandaged_hands': 'bandaged_hand',
-    'bandages_over_one_eye': 'bandage_over_one_eye',
-    'bandaid_on_elbow': 'bandaid_on_arm',
-    'bandaid_on_finger': 'bandaid_on_hand',
-    'bandaid_on_nipple': 'bandaids_on_nipples',
-    'bandaid_on_nipples': 'bandaids_on_nipples',
-    'bandaids': 'bandaid',
-    'bandaids_on_nipple': 'bandaids_on_nipples',
-    'bandanna': 'bandana',
-    'bangles': 'bangle',
-    'bangs_between_eyes': 'hair_between_eyes',
-    'baquartet': 'team_9_(touhou)',
-    'bar': 'bar_(place)',
-    'bar_code': 'barcode',
-    'barbecue_(activity)': 'grilling',
-    'barbecue_(object)': 'grill',
-    'barbed_penis': 'spiked_penis',
-    'bare_feet': 'barefoot',
-    'bare_foot': 'barefoot',
-    'bare_pecs': 'bare_pectorals',
-    'bare_shoulder': 'bare_shoulders',
-    'bared_teeth': 'teeth',
-    'barefeet': 'barefoot',
-    'barefoot_sandals': 'barefoot_sandals_(jewelry)',
-    'bareshoulders': 'bare_shoulders',
-    'barrette': 'hairclip',
-    'baseball_glove': 'baseball_mitt',
-    'bass': 'bass_guitar',
-    'bass_clef_hair_ornament': 'musical_note_hair_ornament',
-    'bat': 'bat_(animal)',
-    'bat_(baseball)': 'baseball_bat',
-    'bath_tub': 'bathtub',
-    'bathing_suit': 'swimsuit',
-    'baton_(conducting)': 'conductor_baton',
-    'baton_(instrument)': 'conductor_baton',
-    'bats': 'bat_(animal)',
-    'batteries': 'battery',
-    'batting_helmet': 'baseball_helmet',
-    'battle_stance': 'fighting_stance',
-    'batwing': 'bat_wings',
-    'bauble_(christmas)': 'christmas_ornaments',
-    'bbq_(activity)': 'grilling',
-    'bbq_(object)': 'grill',
-    'beach_ball': 'beachball',
-    'beaded_panties': 'pearl_thong',
-    'beakers': 'beaker',
-    'beam_saber': 'energy_sword',
-    'beam_sword': 'energy_sword',
-    'beamed_quavers': 'beamed_eighth_notes',
-    'beamed_semiquavers': 'beamed_sixteenth_notes',
-    'bean': 'beans',
-    'beanbag_chair': 'bean_bag_chair',
-    'beastiality': 'bestiality',
-    'beauty_mark': 'mole',
-    'beckon': 'beckoning',
-    'beckoning_cat': 'maneki-neko',
-    'bed_head': 'messy_hair',
-    'bed_sheets': 'bed_sheet',
-    'bedsheet': 'bed_sheet',
-    'bedsheets': 'bed_sheet',
-    'bedside_table': 'nightstand',
-    'beer_carton': 'alcohol_carton',
-    'behind_back': 'holding_behind_back',
-    'bell_choker': 'neck_bell',
-    'bell_collar': 'neck_bell',
-    'bell_hair_ornament': 'hair_bell',
-    'bellbottoms': 'bell-bottoms',
-    'bellcollar': 'neck_bell',
-    'bells': 'bell',
-    'belly_button': 'navel',
-    'belly_peek': 'midriff_peek',
-    'bellybutton': 'navel',
-    'bellybutton_piercing': 'navel_piercing',
-    'belt_bracelet': 'wrist_belt',
-    'belt_choker': 'belt_collar',
-    'beltbra': 'belt_bra',
-    'belts': 'belt',
-    'beltskirt': 'belt_skirt',
-    'bend_over': 'bent_over',
-    'bending_over': 'bent_over',
-    'bent-over': 'bent_over',
-    'bento-box': 'bento',
-    'bento_box': 'bento',
-    'bentou': 'bento',
-    'beretta_92fs': 'beretta_92',
-    'beretta_m9': 'beretta_92',
-    'berries': 'berry',
-    'between_pecs': 'between_pectorals',
-    'beverage': 'drink',
-    'bfg': 'huge_weapon',
-    'bicorne_hat': 'bicorne',
-    'bicycle_jersey': 'bike_jersey',
-    'big_areola': 'large_areolae',
-    'big_areolae': 'large_areolae',
-    'big_ass': 'huge_ass',
-    'big_breasts': 'large_breasts',
-    'big_butt': 'huge_ass',
-    'big_ears': 'large_ears',
-    'big_hat': 'large_hat',
-    'big_hips': 'wide_hips',
-    'big_penis': 'large_penis',
-    'big_tail': 'large_tail',
-    'big_thighs': 'thick_thighs',
-    'bike': 'bicycle',
-    'bike_shorts_under_skirt': 'shorts_under_skirt',
-    'bike_suit': 'bikesuit',
-    'biker_shorts': 'bike_shorts',
-    'biker_suit': 'bikesuit',
-    'bikini_aside': 'bikini_bottom_aside',
-    'bikini_bottom': 'bikini_bottom_only',
-    'bikini_bottom_removed': 'unworn_bikini_bottom',
-    'bikini_down': 'bikini_pull',
-    'bikini_lift': 'bikini_top_lift',
-    'bikini_removed': 'unworn_bikini',
-    'bikini_top': 'bikini_top_only',
-    'bikini_top_removed': 'unworn_bikini_top',
-    'binky': 'pacifier',
-    'bird_cage': 'birdcage',
-    'bird_in_hand': 'bird_on_hand',
-    'bird_on_finger': 'bird_on_hand',
-    'birds': 'bird',
-    'birthday_hat': 'party_hat',
-    'bisexual_(female)': 'bisexual_female',
-    'bisexual_(male)': 'bisexual_male',
-    'bishi': 'bishounen',
-    'bishonen': 'bishounen',
-    'bishop_sleeves': 'puffy_long_sleeves',
-    'bishounens': 'bishounen',
-    'bitch_brat': 'mesugaki',
-    'bite': 'biting',
-    'bitemark': 'bite_mark',
-    'bitgag': 'bit_gag',
-    'black-framed_glasses': 'black-framed_eyewear',
-    'black-hair': 'black_hair',
-    'black_and_white': 'greyscale',
-    'black_backpack': 'black_bag',
-    'black_bikini_bottom': 'black_bikini',
-    'black_bikini_top': 'black_bikini',
-    'black_blazer': 'black_jacket',
-    'black_blouse': 'black_shirt',
-    'black_boots': 'black_footwear',
-    'black_cat_(animal)': 'black_cat',
-    'black_cock': 'dark_penis',
-    'black_earrings': 'earrings',
-    'black_eye': 'bruised_eye',
-    'black_eye_(injury)': 'bruised_eye',
-    'black_fingernails': 'black_nails',
-    'black_glove': 'black_gloves',
-    'black_jabot': 'black_ascot',
-    'black_key': 'black_keys_(type-moon)',
-    'black_keys': 'black_keys_(type-moon)',
-    'black_keys_(fate)': 'black_keys_(type-moon)',
-    'black_kneehighs': 'black_socks',
-    'black_lipstick': 'black_lips',
-    'black_pillow': 'pillow',
-    'black_rose_(flower)': 'black_rose',
-    'black_shoes': 'black_footwear',
-    'black_swimsuit': 'black_one-piece_swimsuit',
-    'black_underwear_(male)': 'black_male_underwear',
-    'black_wing': 'black_wings',
-    'black_yukata': 'black_kimono',
-    'blackboard': 'chalkboard',
-    'blackhair': 'black_hair',
-    'blahaj': 'ikea_shark',
-    'blank_thought_bubble': 'blank_speech_bubble',
-    'blank_word_balloon': 'blank_speech_bubble',
-    'blank_word_bubble': 'blank_speech_bubble',
-    'blimp': 'dirigible',
-    'blindfolded': 'blindfold',
-    'blinds': 'window_blinds',
-    'blink': 'blinking',
-    'blond': 'blonde_hair',
-    'blond_hair': 'blonde_hair',
-    'blonde': 'blonde_hair',
-    'blonde_eyelashes': 'colored_eyelashes',
-    'blondehair': 'blonde_hair',
-    'blood-stained_clothes': 'blood_on_clothes',
-    'blood-stained_knife': 'blood_on_knife',
-    'blood_from_nose': 'nosebleed',
-    'blood_moon': 'red_moon',
-    'blood_on_fingers': 'blood_on_hands',
-    'blood_on_floor': 'blood_on_ground',
-    'blood_on_hair': 'blood_in_hair',
-    'blood_pack': 'blood_bag',
-    'blood_pool': 'pool_of_blood',
-    'blood_spatter': 'blood_splatter',
-    'blood_stains': 'blood_stain',
-    'blood_tears': 'blood_from_eyes',
-    'bloodshot_eye': 'bloodshot_eyes',
-    'bloodstains': 'blood_stain',
-    'bloody_arm': 'blood_on_arm',
-    'bloody_bandages': 'blood_on_bandages',
-    'bloody_breasts': 'blood_on_breasts',
-    'bloody_chest': 'blood_on_chest',
-    'bloody_clothes': 'blood_on_clothes',
-    'bloody_face': 'blood_on_face',
-    'bloody_fingers': 'blood_on_hands',
-    'bloody_ground': 'blood_on_ground',
-    'bloody_hair': 'blood_in_hair',
-    'bloody_hands': 'blood_on_hands',
-    'bloody_knife': 'blood_on_knife',
-    'bloody_leg': 'blood_on_leg',
-    'bloody_mouth': 'blood_from_mouth',
-    'bloody_nose': 'nosebleed',
-    'bloody_sword': 'blood_on_weapon',
-    'bloody_tears': 'blood_from_eyes',
-    'bloody_wall': 'blood_on_wall',
-    'bloody_weapon': 'blood_on_weapon',
-    'bloomer_pull': 'bloomers_pull',
-    'blow_dryer': 'hair_dryer',
-    'blow_job': 'fellatio',
-    'blowdryer': 'hair_dryer',
-    'blowing_clothes': 'floating_clothes',
-    'blowing_leaves': 'falling_leaves',
-    'blowjob': 'fellatio',
-    'blowjob_face': ':>=',
-    'blowjob_gesture': 'fellatio_gesture',
-    'blown_kiss': 'blowing_kiss',
-    'blue-framed_glasses': 'blue-framed_eyewear',
-    'blue_backpack': 'blue_bag',
-    'blue_berry': 'blueberry',
-    'blue_bikini_bottom': 'blue_bikini',
-    'blue_bikini_top': 'blue_bikini',
-    'blue_blazer': 'blue_jacket',
-    'blue_blouse': 'blue_shirt',
-    'blue_boots': 'blue_footwear',
-    'blue_earrings': 'earrings',
-    'blue_eyelashes': 'colored_eyelashes',
-    'blue_eyepatch': 'colored_eyepatch',
-    'blue_fingernails': 'blue_nails',
-    'blue_flame': 'blue_fire',
-    'blue_jabot': 'blue_ascot',
-    'blue_jeans': 'jeans',
-    'blue_kneehighs': 'blue_socks',
-    'blue_lipstick': 'blue_lips',
-    'blue_pillow': 'pillow',
-    'blue_shoes': 'blue_footwear',
-    'blue_swimsuit': 'blue_one-piece_swimsuit',
-    'blue_underwear_(male)': 'blue_male_underwear',
-    'blue_yukata': 'blue_kimono',
-    'blueberries': 'blueberry',
-    'blueeyes': 'blue_eyes',
-    'bluehair': 'blue_hair',
-    'blurred': 'blurry',
-    'blush_sticker': 'blush_stickers',
-    'blushing': 'blush',
-    'boa': 'feather_boa',
-    'boars': 'boar',
-    'boat_paddle': 'oar',
-    'boba_tea': 'bubble_tea',
-    'bobbed_hair': 'bob_cut',
-    'bobblehat': 'pom_pom_beanie',
-    'body_odor': 'smell',
-    'body_paint': 'bodypaint',
-    'body_suit': 'bodysuit',
-    'body_swap': 'body_switch',
-    'body_switch': 'personality_switch',
-    'bodystocking_under_clothes': 'bodystocking',
-    'bolero': 'cropped_jacket',
-    'bolt': 'bolt_(hardware)',
-    'bolt-action': 'bolt_action',
-    'bolt_in_head': 'screw_in_head',
-    'bolts': 'bolt_(hardware)',
-    'bones': 'bone',
-    'boob_grab': 'grabbing_another\'s_breast',
-    'boob_slip': 'breast_slip',
-    'boob_window': 'cleavage_cutout',
-    'boobs': 'breasts',
-    'book_cover': 'cover_page',
-    'book_hug': 'hugging_book',
-    'bookcase': 'bookshelf',
-    'books': 'book',
-    'bookshelves': 'bookshelf',
-    'boot': 'boots',
-    'boot_bow': 'footwear_bow',
-    'boot_ribbon': 'footwear_ribbon',
-    'booth': 'booth_seating',
-    'boots_removed': 'unworn_boots',
-    'booty_shorts': 'short_shorts',
-    'bordered': 'border',
-    'borrowed_costume': 'borrowed_design',
-    'borrowed_garments': 'borrowed_clothes',
-    'borrowed_pose': 'pose_imitation',
-    'bottles': 'bottle',
-    'bottom_less': 'bottomless',
-    'bounce': 'bouncing',
-    'bound_hands': 'bound_wrists',
-    'bouquets': 'bouquet',
-    'bow_(instrument)': 'bow_(music)',
-    'bow_(musical)': 'bow_(music)',
-    'bow_and_arrow': 'bow_(weapon)',
-    'bow_by_hair': 'bow-shaped_hair',
-    'bow_dress': 'dress_bow',
-    'bow_footwear': 'footwear_bow',
-    'bow_hair': 'bow-shaped_hair',
-    'bow_shirt': 'shirt_bow',
-    'bow_socks': 'bow_legwear',
-    'bow_thighhighs': 'bow_legwear',
-    'bow_tie': 'bowtie',
-    'bowls': 'bowl',
-    'bows': 'bow',
-    'bowtie_removed': 'unworn_bowtie',
-    'box_cutter': 'boxcutter',
-    'box_magazine': 'ammunition_box',
-    'boxart': 'box_art',
-    'boxer_shorts': 'boxers',
-    'boxers_pull': 'male_underwear_pull',
-    'boxes': 'box',
-    'boxing_glove': 'boxing_gloves',
-    'boy\'s_love': 'yaoi',
-    'boy_in_a_box': 'in_box',
-    'boy_love': 'yaoi',
-    'boys_love': 'yaoi',
-    'boys_only': 'male_focus',
-    'bra_down': 'bra_pull',
-    'bra_off': 'unworn_bra',
-    'bra_padding': 'breast_padding',
-    'bra_removed': 'unworn_bra',
-    'bra_stuffing': 'breast_padding',
-    'bra_through_clothes': 'bra_visible_through_clothes',
-    'bracelets': 'bracelet',
-    'bracers': 'bracer',
-    'braided_hair': 'braid',
-    'braided_rice_rope': 'shimenawa',
-    'braids': 'braid',
-    'brainwashing': 'mind_control',
-    'bralift': 'bra_lift',
-    'branches': 'branch',
-    'brand_name': 'product_placement',
-    'brand_name_parody': 'brand_name_imitation',
-    'breast': 'breasts',
-    'breast_cover': 'covering_breasts',
-    'breast_covering': 'covering_breasts',
-    'breast_cup': 'bust_cup',
-    'breast_feed': 'breastfeeding',
-    'breast_feeding': 'breastfeeding',
-    'breast_grab': 'grabbing_another\'s_breast',
-    'breast_lick': 'licking_breast',
-    'breast_licking': 'licking_breast',
-    'breast_outside': 'one_breast_out',
-    'breast_pad': 'breast_padding',
-    'breast_pads': 'breast_padding',
-    'breast_plate': 'breastplate',
-    'breast_squeeze': 'breasts_squeezed_together',
-    'breast_stuffing': 'breast_padding',
-    'breast_suck': 'breast_sucking',
-    'breast_to_breast': 'symmetrical_docking',
-    'breast_veil': 'breast_curtain',
-    'breastless_bra': 'cupless_bra',
-    'breastless_clothing': 'breastless_clothes',
-    'breasts_against_glass': 'breasts_on_glass',
-    'breasts_covering': 'covering_breasts',
-    'breasts_cup': 'bust_cup',
-    'breasts_grab': 'grabbing_another\'s_breast',
-    'breasts_out_of_clothes': 'breasts_out',
-    'breasts_outside': 'breasts_out',
-    'breasts_squeeze': 'breasts_squeezed_together',
-    'breats': 'breasts',
-    'bricks': 'brick',
-    'bridal_carry': 'princess_carry',
-    'bridal_gauntlet': 'single_bridal_gauntlet',
-    'briefs_pull': 'male_underwear_pull',
-    'bright_background': 'backlighting',
-    'british_flag': 'union_jack',
-    'broach': 'brooch',
-    'brofist': 'fist_bump',
-    'broken_chains': 'broken_chain',
-    'broken_ear': 'notched_ear',
-    'broken_glasses': 'broken_eyewear',
-    'broken_rape_victim': 'after_rape',
-    'broomriding': 'broom_riding',
-    'broomstick': 'broom',
-    'brown-framed_glasses': 'brown-framed_eyewear',
-    'brown-hair': 'brown_hair',
-    'brown_backpack': 'brown_bag',
-    'brown_blazer': 'brown_jacket',
-    'brown_blouse': 'brown_shirt',
-    'brown_boots': 'brown_footwear',
-    'brown_earrings': 'earrings',
-    'brown_eyepatch': 'colored_eyepatch',
-    'brown_fingernails': 'brown_nails',
-    'brown_handbag': 'brown_bag',
-    'brown_jabot': 'brown_ascot',
-    'brown_kneehighs': 'brown_socks',
-    'brown_lipstick': 'brown_lips',
-    'brown_shoes': 'brown_footwear',
-    'brown_skin': 'dark_skin',
-    'brown_yukata': 'brown_kimono',
-    'browneyes': 'brown_eyes',
-    'brownhair': 'brown_hair',
-    'bruised': 'bruise',
-    'bruises': 'bruise',
-    'brunette': 'brown_hair',
-    'bubble_blowing': 'blowing_bubbles',
-    'bubble_gum': 'chewing_gum',
-    'bubblegum': 'chewing_gum',
-    'bubbles': 'bubble',
-    'buckled_boots': 'belt_boots',
-    'buckles': 'buckle',
-    'bug_girl': 'arthropod_girl',
-    'bug_net': 'butterfly_net',
-    'buggirl': 'arthropod_girl',
-    'bugs': 'bug',
-    'buildings': 'building',
-    'bukake': 'bukkake',
-    'bukakke': 'bukkake',
-    'bulge_grab': 'crotch_grab',
-    'bulge_on_ass': 'bulge_to_ass',
-    'bulging_cheeks': 'cheek_bulge',
-    'bull_horn': 'megaphone',
-    'bullet_casings': 'shell_casing',
-    'bullet_holes': 'bullet_hole',
-    'bullet_vibrator': 'egg_vibrator',
-    'bullets': 'bullet',
-    'bullhorn': 'megaphone',
-    'bullpup_rifle': 'bullpup',
-    'bulls': 'bull',
-    'bulrush': 'cattail',
-    'bum_huggers': 'buruma',
-    'bump': 'head_bump',
-    'bun': 'single_hair_bun',
-    'bun_covers': 'bun_cover',
-    'bun_huggers': 'buruma',
-    'bunny': 'rabbit',
-    'bunny-shaped_pupils': 'rabbit-shaped_pupils',
-    'bunny_costume': 'rabbit_costume',
-    'bunny_ear': 'rabbit_ears',
-    'bunny_ears': 'rabbit_ears',
-    'bunny_hair_ornament': 'rabbit_hair_ornament',
-    'bunny_hat': 'rabbit_hat',
-    'bunny_hood': 'rabbit_hood',
-    'bunny_on_head': 'rabbit_on_head',
-    'bunny_pose': 'rabbit_pose',
-    'bunny_print': 'rabbit_print',
-    'bunny_suit': 'playboy_bunny',
-    'bunny_suit_(male)': 'male_playboy_bunny',
-    'bunny_tail': 'rabbit_tail',
-    'bunnygirl': 'playboy_bunny',
-    'bunnysuit': 'playboy_bunny',
-    'bunnysuit_(male)': 'male_playboy_bunny',
-    'buns': 'double_bun',
-    'burned': 'burnt',
-    'burned_clothes': 'burnt_clothes',
-    'burning_background': 'fiery_background',
-    'burning_eye': 'flaming_eye',
-    'burning_eyes': 'flaming_eyes',
-    'burning_hand': 'flaming_hand',
-    'burning_hands': 'flaming_hand',
-    'burning_horns': 'fiery_horns',
-    'burning_sword': 'flaming_sword',
-    'burning_weapon': 'flaming_weapon',
-    'bursting_pecs': 'bursting_pectorals',
-    'burumapull': 'buruma_pull',
-    'bushes': 'bush',
-    'businessman': 'salaryman',
-    'busstop': 'bus_stop',
-    'bust': 'upper_body',
-    'butt': 'ass',
-    'butt_cheeks': 'ass',
-    'butt_fangs': 'ass_visible_through_thighs',
-    'butt_hole': 'anus',
-    'butt_plug_tail': 'anal_tail',
-    'buttcrack': 'butt_crack',
-    'butterflies': 'butterfly',
-    'butterfly_on_finger': 'butterfly_on_hand',
-    'butterfly_pose': 'butterfly_sitting',
-    'butthole': 'anus',
-    'buttocks': 'ass',
-    'button': 'buttons',
-    'button_badges': 'button_badge',
-    'button_pop': 'popped_button',
-    'buttplug': 'butt_plug',
-    'cables': 'cable',
-    'cake_box': 'pastry_box',
-    'caliburn': 'caliburn_(fate)',
-    'camcorder_interface': 'viewfinder',
-    'camel_toe': 'cameltoe',
-    'camellia_(flower)': 'camellia',
-    'camera_frame': 'viewfinder',
-    'camera_hanging_from_neck': 'camera_around_neck',
-    'camera_on_neck': 'camera_around_neck',
-    'camo': 'camouflage',
-    'camouflage_hat': 'camouflage_headwear',
-    'camouflage_helmet': 'camouflage_headwear',
-    'camouflage_print': 'camouflage',
-    'can_badge': 'button_badge',
-    'candied_apple': 'candy_apple',
-    'candies': 'candy',
-    'candles': 'candle',
-    'candlestick': 'candlestand',
-    'candy_floss': 'cotton_candy',
-    'cannons': 'cannon',
-    'canopy': 'canopy_(aircraft)',
-    'cans': 'can',
-    'cap_backwards': 'backwards_hat',
-    'cape_billowing': 'floating_cape',
-    'cape_removed': 'unworn_cape',
-    'capris': 'capri_pants',
-    'caramel_dansen': 'caramelldansen',
-    'cards': 'card',
-    'carp_streamer': 'koinobori',
-    'carrots': 'carrot',
-    'carry': 'carrying',
-    'carrying_on_back': 'piggyback',
-    'cars': 'car',
-    'cartoon': 'toon_(style)',
-    'cash': 'money',
-    'cash_(chinese)': 'holed_coin',
-    'casual_one_piece_swimsuit': 'casual_one-piece_swimsuit',
-    'cat_backpack': 'cat_bag',
-    'cat_band_legwear': 'cat_ear_legwear',
-    'cat_bell': 'jingle_bell',
-    'cat_eyes': 'slit_pupils',
-    'cat_food': 'pet_food',
-    'cat_gloves': 'cat_paws',
-    'cat_keyhole_bra': 'cat_lingerie',
-    'cat_pose': 'paw_pose',
-    'cat_suit': 'cat_costume',
-    'cat_tails': 'cat_tail',
-    'cat_toy': 'cat_teaser',
-    'catboy': 'cat_boy',
-    'catears': 'cat_ears',
-    'catgirl': 'cat_girl',
-    'cathat': 'cat_hat',
-    'cathood': 'cat_hood',
-    'cats': 'cat',
-    'cattail_(plant)': 'cattail',
-    'caustic_lighting': 'caustics',
-    'caution_sign': 'warning_sign',
-    'caves': 'cave',
-    'cd_cover': 'album_cover',
-    'cel_shading_(2d)': 'anime_coloring',
-    'cell_phone': 'cellphone',
-    'cellphone_picture': 'cellphone_photo',
-    'cemetery': 'graveyard',
-    'censor': 'censored',
-    'censor_bar': 'bar_censor',
-    'censor_bars': 'bar_censor',
-    'censor_hair': 'hair_censor',
-    'censor_heart': 'heart_censor',
-    'censor_soap': 'soap_censor',
-    'censor_steam': 'steam_censor',
-    'censor_tail': 'tail_censor',
-    'censoring': 'censored',
-    'center_part': 'parted_hair',
-    'cfnf': 'clothed_female_nude_female',
-    'cfnm': 'clothed_female_nude_male',
-    'chain_link_fence': 'chain-link_fence',
-    'chainlink_fence': 'chain-link_fence',
-    'chains': 'chain',
-    'chairs': 'chair',
-    'chalkboard_eraser': 'board_eraser',
-    'character-shaped_food': 'character-themed_food',
-    'character_food': 'character-themed_food',
-    'character_keychain': 'character_charm',
-    'character_sheet': 'reference_sheet',
-    'chase': 'chasing',
-    'cheating': 'cheating_(relationship)',
-    'checkered_blouse': 'checkered_shirt',
-    'checkered_clothing': 'checkered_clothes',
-    'checkered_obi': 'checkered_sash',
-    'checkered_yukata': 'checkered_kimono',
-    'cheek_kiss': 'kissing_cheek',
-    'cheek_lick': 'licking_another\'s_cheek',
-    'cheek_licking': 'licking_another\'s_cheek',
-    'cheek_mouth': 'sideways_mouth',
-    'cheek_ornament': 'sticker_on_face',
-    'cheek_pinch': 'cheek_pinching',
-    'cheek_poke': 'cheek_poking',
-    'cheek_rub': 'cheek_press',
-    'cheek_scar': 'scar_on_cheek',
-    'cheek_sticker': 'sticker_on_face',
-    'cheek_to_cheek': 'cheek-to-cheek',
-    'cheek_tug': 'cheek_pull',
-    'cheer': 'cheering',
-    'cheered': 'cheering',
-    'cheergirl': 'cheerleader',
-    'cheers_(gesture)': 'toasting_(gesture)',
-    'cheeseburger': 'burger',
-    'chef_uniform': 'chef',
-    'chelsea_smile': 'glasgow_smile',
-    'cheongsam': 'china_dress',
-    'cherries': 'cherry',
-    'cherry_blossom': 'cherry_blossoms',
-    'cherry_blossom_viewing': 'hanami',
-    'cherry_tree': 'cherry_blossoms',
-    'cherry_trees': 'cherry_blossoms',
-    'chest_gem': 'chest_jewel',
-    'chest_plate': 'breastplate',
-    'chest_pocket': 'breast_pocket',
-    'chest_scar': 'scar_on_chest',
-    'chestplate': 'breastplate',
-    'chicken_drumstick': 'chicken_leg',
-    'chickens': 'chicken',
-    'chicks': 'chick',
-    'child_drawing': 'child\'s_drawing',
-    'child_on_child': 'kodomo_doushi',
-    'children': 'child',
-    'chili': 'chili_pepper',
-    'chin_grab': 'grabbing_another\'s_chin',
-    'chin_hold': 'grabbing_another\'s_chin',
-    'chin_lift': 'grabbing_another\'s_chin',
-    'chin_on_head': 'head_on_head',
-    'chin_rest': 'head_rest',
-    'chin_stroking': 'stroking_own_chin',
-    'chinadress': 'china_dress',
-    'chinese': 'chinese_text',
-    'chinese_architecture': 'east_asian_architecture',
-    'chinese_dragon': 'eastern_dragon',
-    'chinese_dress': 'china_dress',
-    'chinese_knot_button': 'pankou',
-    'chinese_vampire': 'jiangshi',
-    'chinese_window': 'lattice',
-    'chip_(poker)': 'poker_chip',
-    'chipped_ear': 'notched_ear',
-    'chips': 'chips_(food)',
-    'choco_banana': 'chocolate_banana',
-    'chocobanana': 'chocolate_banana',
-    'chocolate_box': 'box_of_chocolates',
-    'chocolate_hair': 'brown_hair',
-    'chocolate_heart': 'heart-shaped_chocolate',
-    'choking_another': 'strangling',
-    'chopping_board': 'cutting_board',
-    'chopstick': 'chopsticks',
-    'christian_cross': 'latin_cross',
-    'christmas_gift': 'christmas_present',
-    'christmas_hat': 'santa_hat',
-    'chubby': 'plump',
-    'chuupetto': 'tupet',
-    'cigarete': 'cigarette',
-    'cigarette_box': 'cigarette_pack',
-    'cigarettes': 'cigarette',
-    'cigarrete': 'cigarette',
-    'cigarrette': 'cigarette',
-    'cinema': 'movie_theater',
-    'circle_dress': 'circle_skirt',
-    'circles': 'circle',
-    'circular_border': 'round_border',
-    'circular_eyewear': 'round_eyewear',
-    'circular_formation': 'circle_formation',
-    'circular_image': 'round_image',
-    'city_skyline': 'skyline',
-    'clams': 'clam',
-    'clap': 'clapping',
-    'clarent': 'clarent_(fate)',
-    'clasped_hands': 'own_hands_clasped',
-    'class_room': 'classroom',
-    'classroom_eraser': 'board_eraser',
-    'clavicle': 'collarbone',
-    'clavicles': 'collarbone',
-    'claw': 'claws',
-    'claw_crane': 'crane_game',
-    'claw_machine': 'crane_game',
-    'cleavage_(male)': 'pectoral_cleavage',
-    'cleavage_window': 'cleavage_cutout',
-    'cleave_gagged': 'cleave_gag',
-    'cleavegag': 'cleave_gag',
-    'clementine': 'mandarin_orange',
-    'clenched_fist': 'clenched_hand',
-    'clenched_fists': 'clenched_hands',
-    'clenched_toes': 'toe_scrunch',
-    'clevage': 'cleavage',
-    'clit': 'clitoris',
-    'clit_piercing': 'clitoris_piercing',
-    'clitoris_stimulation': 'clitoral_stimulation',
-    'clock_eyed': 'clock_eyes',
-    'clocks': 'clock',
-    'clones': 'clone',
-    'close_up': 'close-up',
-    'closed_fan': 'folded_fan',
-    'closed_fist': 'clenched_hand',
-    'closed_fists': 'clenched_hands',
-    'closeup': 'close-up',
-    'clothed_female_naked_female': 'clothed_female_nude_female',
-    'clothed_female_naked_male': 'clothed_female_nude_male',
-    'clothed_humping': 'dry_humping',
-    'clothed_male_naked_female': 'clothed_male_nude_female',
-    'clothed_male_naked_male': 'clothed_male_nude_male',
-    'clothed_navel': 'covered_navel',
-    'clothes_aside': 'clothing_aside',
-    'clothes_off': 'unworn_clothes',
-    'clothes_pins': 'clothes_pin',
-    'clothes_removed': 'unworn_clothes',
-    'clothes_sniffing': 'smelling_clothes',
-    'clothes_thief': 'clothes_theft',
-    'clothespin': 'clothes_pin',
-    'clothespins': 'clothes_pin',
-    'clothing_between_breasts': 'clothes_between_breasts',
-    'clothing_between_thighs': 'clothes_between_thighs',
-    'clothing_down': 'clothes_down',
-    'clothing_pin': 'clothes_pin',
-    'clothing_thief': 'clothes_theft',
-    'clothing_writing': 'clothes_writing',
-    'clouds': 'cloud',
-    'clow_cards': 'clow_card',
-    'club': 'club_(weapon)',
-    'clubs_(card_suit)': 'club_(shape)',
-    'cmnf': 'clothed_male_nude_female',
-    'cmnm': 'clothed_male_nude_male',
-    'coaching_(sexual)': 'sexual_coaching',
-    'coast': 'shore',
-    'coat_hanger': 'clothes_hanger',
-    'coat_on_shoulders': 'jacket_on_shoulders',
-    'coat_over_shoulders': 'jacket_on_shoulders',
-    'coat_removed': 'unworn_coat',
-    'cobweb': 'spider_web',
-    'cobwebs': 'spider_web',
-    'cock': 'penis',
-    'cock-tail': 'tucked_penis',
-    'cock_shock': 'penis_awe',
-    'cockroaches': 'cockroach',
-    'cocks': 'penis',
-    'coconuts': 'coconut',
-    'coed_bathing': 'mixed-sex_bathing',
-    'coffee_cup': 'disposable_coffee_cup',
-    'coffee_maker_(object)': 'coffee_maker',
-    'coffee_shop': 'cafe',
-    'cog': 'gears',
-    'cogs': 'gears',
-    'coins': 'coin',
-    'coke_bottle': 'soda_bottle',
-    'cold_sweat': 'nervous_sweating',
-    'collar_bell': 'neck_bell',
-    'collar_pull': 'collar_tug',
-    'collar_up': 'popped_collar',
-    'collar_with_chain': 'chain_leash',
-    'collarbones': 'collarbone',
-    'collared_blouse': 'collared_shirt',
-    'color_palette': 'color_guide',
-    'colored_lenses': 'tinted_eyewear',
-    'colored_nails': 'nail_polish',
-    'colored_thought_bubble': 'colored_speech_bubble',
-    'colorful_background': 'multicolored_background',
-    'coloured_eyelashes': 'colored_eyelashes',
-    'colt_m1911': 'm1911',
-    'columns': 'column',
-    'combing': 'brushing_hair',
-    'combing_hair': 'brushing_hair',
-    'comics': 'comic',
-    'coming_out_of_screen': 'through_screen',
-    'common_race_outfit_(umamusume)': 'starting_future_(umamusume)',
-    'compass_rose_halo': 'spiked_halo',
-    'compasses': 'compass',
-    'completely_naked': 'completely_nude',
-    'complex_border': 'ornate_border',
-    'computer_chair': 'office_chair',
-    'computer_monitor': 'monitor',
-    'computer_screen': 'monitor',
-    'concerned': 'worried',
-    'condensation_trail': 'contrail',
-    'condom_filling': 'used_condom_on_penis',
-    'condoms': 'condom',
-    'confetti_popper': 'party_popper',
-    'conical_flask': 'erlenmeyer_flask',
-    'consentacles': 'consensual_tentacles',
-    'consoling': 'comforting',
-    'constellations': 'constellation',
-    'construction_helmet': 'hard_hat',
-    'contracted_pupils': 'constricted_pupils',
-    'contrails': 'contrail',
-    'control_rod': 'control_rod_(touhou)',
-    'convenient_bath_steam': 'steam_censor',
-    'convenient_censorship': 'convenient_censoring',
-    'convenient_tail': 'tail_censor',
-    'cookie_straw': 'wafer_stick',
-    'cookies': 'cookie',
-    'cooking_pan': 'frying_pan',
-    'cool_box': 'cooler',
-    'cop': 'police',
-    'copper_sign': 'venus_symbol',
-    'copper_symbol': 'venus_symbol',
-    'copy-paste': 'recurring_image',
-    'copy-pasted': 'recurring_image',
-    'copy-pasting': 'recurring_image',
-    'copyright': 'copyright_notice',
-    'copyright_abbreviation': 'copyright_name',
-    'copyright_notice': 'watermark',
-    'copyright_title': 'copyright_name',
-    'corals': 'coral',
-    'cord': 'cable',
-    'cords': 'cable',
-    'corgi': 'welsh_corgi',
-    'corkboard': 'bulletin_board',
-    'corridor': 'hallway',
-    'cosmonaut': 'astronaut',
-    'costume_swap': 'costume_switch',
-    'countertop': 'counter',
-    'countryside': 'rural',
-    'cover-up': 'swimsuit_cover-up',
-    'coveralls': 'jumpsuit',
-    'covered_erect_nipples': 'covered_nipples',
-    'covered_erection': 'erection_under_clothes',
-    'covered_eye': 'one_eye_covered',
-    'covering': 'covering_privates',
-    'covering_breast': 'covering_one_breast',
-    'covering_ears': 'covering_own_ears',
-    'covering_eye': 'covering_one_eye',
-    'covering_eyes': 'covering_own_eyes',
-    'covering_mouth': 'covering_own_mouth',
-    'covering_pussy': 'covering_crotch',
-    'cow_bell': 'cowbell',
-    'cowboys': 'cowboy',
-    'cowgirl': 'cow_girl',
-    'cowgirl_(position)': 'cowgirl_position',
-    'cowprint': 'cow_print',
-    'cowter': 'couter',
-    'coyote_ears': 'wolf_ears',
-    'coyote_tail': 'wolf_tail',
-    'crabs': 'crab',
-    'cracked': 'crack',
-    'cracked_lens': 'cracked_glass',
-    'cracks': 'crack',
-    'crane_(bird)': 'crane_(animal)',
-    'crates': 'crate',
-    'cravat': 'ascot',
-    'crayons': 'crayon',
-    'cream_puffs': 'cream_puff',
-    'creatures': 'creature',
-    'creek': 'stream',
-    'creepy': 'horror_(theme)',
-    'crepuscular_rays': 'sunbeam',
-    'crescent_earring': 'crescent_earrings',
-    'crescent_moon_pin': 'crescent_pin',
-    'crescent_moon_symbol': 'crescent',
-    'crhistmas': 'christmas',
-    'criminal_photo': 'mugshot',
-    'cringe': 'wince',
-    'crisps': 'chips_(food)',
-    'criss_cross_halter': 'criss-cross_halter',
-    'crocodile_tail': 'crocodilian_tail',
-    'cropped_background': 'outside_border',
-    'cropped_feet': 'cropped_legs',
-    'cropped_head': 'head_out_of_frame',
-    'cropped_pants': 'capri_pants',
-    'cross-laced_clothing': 'cross-laced_clothes',
-    'cross-laced_shirt': 'cross-laced_top',
-    'cross-shaped_pupils': '+_+',
-    'cross_eyed': 'cross-eyed',
-    'cross_laced_footwear': 'cross-laced_footwear',
-    'cross_of_saint_peter': 'inverted_cross',
-    'cross_section': 'cross-section',
-    'crossdress': 'crossdressing',
-    'crossection': 'cross-section',
-    'crossed_eyes': 'cross-eyed',
-    'crossed_legs_(lying)': 'crossed_legs',
-    'crossed_legs_(sitting)': 'crossed_legs',
-    'crossed_legs_(standing)': 'crossed_legs',
-    'crossgender': 'genderswap',
-    'crosshairs': 'crosshair',
-    'crossplay': 'crossdressing',
-    'crosssection': 'cross-section',
-    'crotch_tattoo': 'pubic_tattoo',
-    'crotch_veil': 'pelvic_curtain',
-    'crotchet': 'quarter_note',
-    'crotchless_clothes': 'crotchless',
-    'crotchless_clothing': 'crotchless',
-    'crotchrope': 'crotch_rope',
-    'crouch': 'squatting',
-    'crouched': 'squatting',
-    'crouching': 'squatting',
-    'crown_removed': 'unworn_crown',
-    'crush': 'crushing',
-    'crutches': 'crutch',
-    'cry': 'crying',
-    'crying_blood': 'blood_from_eyes',
-    'cryomancy': 'cryokinesis',
-    'crystals': 'crystal',
-    'cubes': 'cube',
-    'cucumbers': 'cucumber',
-    'cuddle': 'cuddling',
-    'cue_ball': 'billiard_ball',
-    'cuff': 'cuffs',
-    'cuff-link': 'cuff_links',
-    'cuff-links': 'cuff_links',
-    'cuff_link': 'cuff_links',
-    'cuff_sleeve': 'sleeve_cuffs',
-    'cuff_sleeves': 'sleeve_cuffs',
-    'cuffed_sleeves': 'sleeve_cuffs',
-    'cultural_miku': 'worldwide_miku',
-    'cum_between_breasts': 'cum_on_breasts',
-    'cum_covered': 'bukkake',
-    'cum_drinking': 'gokkun',
-    'cum_drip': 'cumdrip',
-    'cum_everywhere': 'bukkake',
-    'cum_in_armpit': 'cum_on_body',
-    'cum_in_glass': 'cum_in_cup',
-    'cum_in_hair': 'cum_on_hair',
-    'cum_in_hands': 'cum_on_hands',
-    'cum_in_uterus': 'internal_cumshot',
-    'cum_inside': 'cum_in_pussy',
-    'cum_inside_clothes': 'cum_in_clothes',
-    'cum_inside_thighhigh': 'cum_in_clothes',
-    'cum_on_arm': 'cum_on_body',
-    'cum_on_armpit': 'cum_on_body',
-    'cum_on_armpits': 'cum_on_body',
-    'cum_on_arms': 'cum_on_body',
-    'cum_on_back': 'cum_on_body',
-    'cum_on_belly': 'cum_on_body',
-    'cum_on_boy': 'cum_on_male',
-    'cum_on_buruma': 'cum_on_clothes',
-    'cum_on_chest': 'cum_on_body',
-    'cum_on_clothing': 'cum_on_clothes',
-    'cum_on_ear': 'cum_on_body',
-    'cum_on_face': 'facial',
-    'cum_on_feet': 'cum_on_body',
-    'cum_on_foot': 'cum_on_body',
-    'cum_on_glasses': 'cum_on_eyewear',
-    'cum_on_hand': 'cum_on_body',
-    'cum_on_hands': 'cum_on_body',
-    'cum_on_hat': 'cum_on_clothes',
-    'cum_on_hips': 'cum_on_body',
-    'cum_on_leg': 'cum_on_legs',
-    'cum_on_legs': 'cum_on_body',
-    'cum_on_lower_body': 'cum_on_body',
-    'cum_on_panties': 'cum_on_clothes',
-    'cum_on_pantyhose': 'cum_on_clothes',
-    'cum_on_shoes': 'cum_on_clothes',
-    'cum_on_socks': 'cum_on_clothes',
-    'cum_on_stockings': 'cum_on_clothes',
-    'cum_on_swimsuit': 'cum_on_clothes',
-    'cum_on_thigh': 'cum_on_body',
-    'cum_on_thighhighs': 'cum_on_clothes',
-    'cum_on_thighs': 'cum_on_legs',
-    'cum_on_tits': 'cum_on_breasts',
-    'cum_on_upper_body': 'cum_on_body',
-    'cum_trail': 'cum_string',
-    'cum_under_clothes': 'cum_in_clothes',
-    'cum_while_penetrated': 'ejaculating_while_penetrated',
-    'cumpool': 'cum_pool',
-    'cumshot': 'cum',
-    'cumshot_in_mouth': 'cum_in_mouth',
-    'cumstring': 'cum_string',
-    'cunilingus': 'cunnilingus',
-    'cunillingus': 'cunnilingus',
-    'cunnillingus': 'cunnilingus',
-    'cup_noodle': 'nissin_cup_noodle',
-    'cup_noodles': 'cup_ramen',
-    'cupcakes': 'cupcake',
-    'cupped_hands': 'cupping_hands',
-    'cups': 'cup',
-    'curiosity': 'curious',
-    'curled-toe_shoes': 'pointy_footwear',
-    'curled_horn': 'curled_horns',
-    'curled_toe_shoes': 'pointy_footwear',
-    'curled_toes': 'toe_scrunch',
-    'curls': 'curly_hair',
-    'curtain': 'curtains',
-    'curtsie': 'curtsey',
-    'curtsy': 'curtsey',
-    'curvaceous': 'curvy',
-    'cut': 'cuts',
-    'cut_wrists': 'wrist_cutting',
-    'cute_&_girly(idolmaster)': 'cute_&_girly_(idolmaster)',
-    'cute_and_girly_(idolmaster)': 'cute_&_girly_(idolmaster)',
-    'cyan_background': 'aqua_background',
-    'cyan_eyes': 'aqua_eyes',
-    'cyan_hair': 'aqua_hair',
-    'cybernetic_eye': 'mechanical_eye',
-    'cyborgs': 'cyborg',
-    'cymbal': 'cymbals',
-    'daggers': 'dagger',
-    'daisies': 'daisy',
-    'daisy_(flower)': 'daisy',
-    'daisy_dukes': 'denim_shorts',
-    'daisydukes': 'denim_shorts',
-    'dakimakura': 'dakimakura_(medium)',
-    'damage': 'damaged',
-    'danbooru': 'cardboard_box',
-    'dance': 'dancing',
-    'dandelions': 'dandelion',
-    'dangle_earrings': 'floating_earring',
-    'dark_ball': 'dusk_ball',
-    'dark_blue_dress': 'blue_dress',
-    'dark_circles': 'bags_under_eyes',
-    'dark_excalibur': 'excalibur_morgan_(fate)',
-    'dark_eyes': 'black_eyes',
-    'dark_green_background': 'green_background',
-    'dark_hair': 'black_hair',
-    'dark_pussy': 'dark_labia',
-    'dark_skin_female': 'dark_skin',
-    'dark_skinned_female': 'dark-skinned_female',
-    'dark_skinned_male': 'dark-skinned_male',
-    'dark_wings': 'black_wings',
-    'darker_arms': 'colored_extremities',
-    'darker_hands': 'colored_extremities',
-    'darkskin': 'dark_skin',
-    'dash_eyes': 'dashed_eyes',
-    'dashed_outline': 'dotted_line',
-    'dating_sim': 'visual_novel',
-    'day_dreaming': 'imagining',
-    'daydreaming': 'imagining',
-    'de-aged': 'aged_down',
-    'de-aging': 'age_regression',
-    'dead': 'death',
-    'dead_eyes': 'empty_eyes',
-    'dead_tree': 'bare_tree',
-    'defloration': 'virgin',
-    'demon_girls': 'demon_girl',
-    'demongirl': 'demon_girl',
-    'demons': 'demon',
-    'denpa': 'lightning_bolt_symbol',
-    'descensored': 'uncensored',
-    'desks': 'desk',
-    'detached_cuffs': 'wrist_cuffs',
-    'detached_hand': 'disembodied_hand',
-    'detached_head': 'disembodied_head',
-    'detached_sleeve': 'detached_sleeves',
-    'detached_tire': 'unused_tire',
-    'detailed_border': 'ornate_border',
-    'devil': 'demon',
-    'devil_horns': 'demon_horns',
-    'devil_tail': 'demon_tail',
-    'devil_wings': 'demon_wings',
-    'diagonal-striped_clothing': 'diagonal-striped_clothes',
-    'diamond_(emoji)': 'gem_(symbol)',
-    'diamond_(symbol)': 'gem_(symbol)',
-    'diamond_background': 'argyle_background',
-    'diamond_shaped_buttons': 'diamond_button',
-    'diamonds_(card_suit)': 'diamond_(shape)',
-    'dick': 'penis',
-    'dickgirl': 'futanari',
-    'dicks': 'penis',
-    'dildo_machine': 'sex_machine',
-    'dilf': 'mature_male',
-    'dimensional_hole': 'portal_(object)',
-    'dip-dyed_hair': 'colored_tips',
-    'dip_pen': 'nib_pen_(object)',
-    'directional_arrow': 'arrow_(symbol)',
-    'directional_arrows': 'arrow_(symbol)',
-    'dirt_on_face': 'dirty_face',
-    'disc_cover': 'album_cover',
-    'disconnected_mouth': 'split_mouth',
-    'disembodied_hands': 'disembodied_hand',
-    'disembodied_limb': 'disembodied_hand',
-    'disgusted': 'disgust',
-    'dish': 'plate',
-    'dissolving_clothing': 'dissolving_clothes',
-    'dog_bowl': 'pet_bowl',
-    'dog_collar': 'animal_collar',
-    'dog_ear': 'dog_ears',
-    'dog_food': 'pet_food',
-    'dog_pose': 'paw_pose',
-    'dog_tag': 'dog_tags',
-    'dogboy': 'dog_boy',
-    'doggy_style': 'doggystyle',
-    'dogs': 'dog',
-    'dogtag': 'dog_tags',
-    'dogtags': 'dog_tags',
-    'doll_hug': 'hugging_doll',
-    'dolljoints': 'doll_joints',
-    'dolls': 'doll',
-    'dolphin_tail': 'cetacean_tail',
-    'dolphins': 'dolphin',
-    'don\'t_say_lazy': 'don\'t_say_"lazy"',
-    'dongtan_lady_(k_pring)_(cosplay)': 'dongtan_dress',
-    'donut': 'doughnut',
-    'donut_hair_bun': 'doughnut_hair_bun',
-    'donuts': 'doughnut',
-    'doors': 'door',
-    'doraf': 'draph',
-    'doriru': 'drill_hair',
-    'dotted_outline': 'dotted_line',
-    'double_ahoge': 'antenna_hair',
-    'double_braid': 'twin_braids',
-    'double_buns': 'double_bun',
-    'double_ears': 'extra_ears',
-    'double_fox_hand_sign': 'double_fox_shadow_puppet',
-    'double_hair_bun': 'double_bun',
-    'double_peace': 'double_v',
-    'double_wield': 'dual_wielding',
-    'doublepenetration': 'double_penetration',
-    'doughnut_box': 'pastry_box',
-    'doughnuts': 'doughnut',
-    'doujin_(object)': 'manga_(object)',
-    'doujinshi_(object)': 'manga_(object)',
-    'doves': 'dove',
-    'down_blouse': 'downblouse',
-    'dowsing_rods': 'dowsing_rod',
-    'doya-gao': 'doyagao',
-    'dp': 'double_penetration',
-    'drag': 'dragging',
-    'dragonball_(object)': 'dragon_ball_(object)',
-    'drapes': 'curtains',
-    'drawers': 'drawer',
-    'drawstrings': 'drawstring',
-    'dread': 'scared',
-    'dream': 'dreaming',
-    'drenched_panties': 'wet_panties',
-    'dress_basket': 'skirt_basket',
-    'dress_carry': 'skirt_basket',
-    'dress_hold': 'skirt_hold',
-    'dress_jacket': 'suit_jacket',
-    'dress_removed': 'unworn_dress',
-    'dresser': 'chest_of_drawers',
-    'drider': 'arachne',
-    'drill_locks': 'drill_sidelocks',
-    'drillhair': 'drill_hair',
-    'drinking_cup': 'cup',
-    'drinks': 'drink',
-    'dripping_blood': 'blood_drip',
-    'dripping_halo': 'melting_halo',
-    'driver_(kamen_rider)': 'rider_belt',
-    'drool': 'saliva',
-    'drop_earrings': 'floating_earring',
-    'droplet': 'water_drop',
-    'droplets': 'water_drop',
-    'drow': 'dark_elf',
-    'drum_kit': 'drum_set',
-    'drums': 'drum',
-    'drumstick': 'drumsticks',
-    'ds': 'nintendo_ds',
-    'du_dou': 'dudou',
-    'dual_wield': 'dual_wielding',
-    'dumplings': 'dumpling',
-    'dust_particles': 'light_particles',
-    'dustbin': 'trash_can',
-    'dustcloth': 'cleaning_rag',
-    'dwarfs': 'dwarf',
-    'dwarves': 'dwarf',
-    'ear_bite': 'biting_ear',
-    'ear_biting': 'biting_ear',
-    'ear_bow': 'ear_ribbon',
-    'ear_cleaner': 'mimikaki',
-    'ear_clip': 'earclip',
-    'ear_down': 'single_ear_down',
-    'ear_fins': 'head_fins',
-    'ear_grab': 'grabbing_another\'s_ear',
-    'ear_lick': 'licking_ear',
-    'ear_licking': 'licking_ear',
-    'ear_muffs': 'earmuffs',
-    'ear_pull': 'grabbing_another\'s_ear',
-    'ear_ring': 'earrings',
-    'ear_rings': 'earrings',
-    'ear_stud': 'stud_earrings',
-    'ear_studs': 'stud_earrings',
-    'ear_twitch': 'ear_wiggle',
-    'earlobes': 'long_earlobes',
-    'earmuff': 'earmuffs',
-    'earring': 'earrings',
-    'earth': 'earth_(planet)',
-    'ebony': 'very_dark_skin',
-    'ecchi_no_kaze': 'wind_lift',
-    'eden_academy_uniform': 'eden_academy_school_uniform',
-    'eels': 'eel',
-    'egg_roll': 'tamagoyaki',
-    'egg_vibrators': 'egg_vibrator',
-    'eggbeater': 'whisk',
-    'egglaying': 'egg_laying',
-    'eggs': 'egg',
-    'egyptian': 'ancient_egyptian',
-    'egyptian_clothes': 'ancient_egyptian_clothes',
-    'egyptian_collar': 'usekh_collar',
-    'egyptian_cross': 'ankh',
-    'ehomaki': 'ehoumaki',
-    'ejaculation_between_breasts': 'ejaculation',
-    'ejaculation_when_penetrated': 'ejaculating_while_penetrated',
-    'ekg': 'cardiogram',
-    'elbow_on_own_hand': 'hand_on_own_elbow',
-    'elbow_pad': 'elbow_pads',
-    'electric_cable': 'cable',
-    'electric_keyboard': 'keyboard_(instrument)',
-    'electric_piano': 'piano',
-    'electric_socket': 'electrical_outlet',
-    'electric_torch': 'flashlight',
-    'electrical_socket': 'electrical_outlet',
-    'electrical_wire': 'cable',
-    'electricity_manipulation': 'electrokinesis',
-    'electricity_pylon': 'transmission_tower',
-    'electricity_symbol': 'lightning_bolt_symbol',
-    'electrocardiogram': 'cardiogram',
-    'element_connection': 'power_connection',
-    'elf_ears': 'elf',
-    'ellipsis': '...',
-    'elven_ears': 'elf',
-    'embarassed': 'embarrassed',
-    'embarrased': 'embarrassed',
-    'embarrassing': 'embarrassed',
-    'embarrassment': 'embarrassed',
-    'ember': 'embers',
-    'embrace': 'hug',
-    'emerald_(gemstone)': 'green_gemstone',
-    'emotionless': 'expressionless',
-    'empty_speech_bubble': 'blank_speech_bubble',
-    'empty_word_bubble': 'blank_speech_bubble',
-    'engawa': 'veranda',
-    'english': 'english_text',
-    'enraged': 'furious',
-    'erect_clit': 'erect_clitoris',
-    'erect_nipple': 'covered_nipples',
-    'erect_nipplees': 'covered_nipples',
-    'erect_nipples': 'covered_nipples',
-    'erect_nipples_under_clothes': 'covered_nipples',
-    'erect_penis': 'erection',
-    'eroguro': 'ero_guro',
-    'errect_nipples': 'covered_nipples',
-    'error': 'artistic_error',
-    'erun_(granblue_fantasy)': 'erune',
-    'escape': 'fleeing',
-    'escaping': 'fleeing',
-    'eskimo_kiss': 'noses_touching',
-    'esper': 'psychic',
-    'evening_dress': 'evening_gown',
-    'every_country\'s_miku': 'worldwide_miku',
-    'everybody': 'everyone',
-    'excalibur': 'excalibur_(fate/stay_night)',
-    'excalibur_morgan': 'excalibur_morgan_(fate)',
-    'exchanging_clothes': 'costume_switch',
-    'exclamation_mark': '!',
-    'exercise': 'exercising',
-    'explosives': 'explosive',
-    'expressionless_sex': 'emotionless_sex',
-    'extended_pinky': 'pinky_out',
-    'extra_heads': 'multiple_heads',
-    'extra_irises': 'extra_pupils',
-    'extra_wings': 'multiple_wings',
-    'extreme_insertion': 'large_insertion',
-    'extremely_long_hair': 'absurdly_long_hair',
-    'eye_censor': 'censored_identity',
-    'eye_circles': 'bags_under_eyes',
-    'eye_covering_bang': 'hair_over_one_eye',
-    'eye_lashes': 'eyelashes',
-    'eye_of_wadjet': 'eye_of_horus',
-    'eye_of_wdjat': 'eye_of_horus',
-    'eye_of_wedjat': 'eye_of_horus',
-    'eye_patch': 'eyepatch',
-    'eye_roll': 'rolling_eyes',
-    'eye_rub': 'rubbing_eyes',
-    'eye_scar': 'scar_across_eye',
-    'eye_shadow': 'eyeshadow',
-    'eye_through_hair': 'eyes_visible_through_hair',
-    'eyebags': 'bags_under_eyes',
-    'eyeballs': 'eyeball',
-    'eyebrows_behind_hair': 'eyebrows_hidden_by_hair',
-    'eyelid_pull': 'akanbe',
-    'eyemask': 'eye_mask',
-    'eyepatch_off': 'unworn_eyepatch',
-    'eyepatch_removed': 'unworn_eyepatch',
-    'eyes_closed': 'closed_eyes',
-    'eyes_covered': 'covered_eyes',
-    'eyes_focus': 'eye_focus',
-    'eyes_half_closed': 'half-closed_eyes',
-    'eyes_out_of_frame': 'head_out_of_frame',
-    'eyes_wide': 'wide-eyed',
-    'eyewear_chain': 'eyewear_strap',
-    'eyewear_on_clothing': 'eyewear_hang',
-    'eyewear_removed': 'unworn_eyewear',
-    'face-down_ass-up': 'top-down_bottom-up',
-    'face_covered': 'covered_face',
-    'face_down_ass_up': 'top-down_bottom-up',
-    'face_fucking': 'irrumatio',
-    'face_in_breasts': 'face_between_breasts',
-    'face_lick': 'licking_another\'s_face',
-    'face_licking': 'licking_another\'s_face',
-    'face_mask': 'mouth_mask',
-    'face_on_floor': 'face_down',
-    'face_on_ground': 'face_down',
-    'face_paint': 'facepaint',
-    'face_painting': 'drawing_on_another\'s_face',
-    'face_punching': 'face_punch',
-    'face_sitting': 'sitting_on_face',
-    'face_tattoo': 'facial_tattoo',
-    'face_to_face': 'face-to-face',
-    'facefuck': 'irrumatio',
-    'facesitting': 'sitting_on_face',
-    'facial_expressions': 'expressions',
-    'facial_marking': 'facial_mark',
-    'facial_markings': 'facial_mark',
-    'facial_marks': 'facial_mark',
-    'facial_scar': 'scar_on_face',
-    'facial_tattoos': 'facial_tattoo',
-    'fading_borders': 'fading_border',
-    'faerie': 'fairy',
-    'fail': 'failure',
-    'faint_smile': 'light_smile',
-    'fairies': 'fairy',
-    'fairy_floss': 'cotton_candy',
-    'fake_animal_tail': 'fake_tail',
-    'fake_breasts': 'breast_padding',
-    'fake_fingernails': 'fake_nails',
-    'fake_moustache': 'fake_mustache',
-    'fake_smile': 'false_smile',
-    'fakeshot': 'fake_screenshot',
-    'fall_(season)': 'autumn',
-    'fall_leaves': 'autumn_leaves',
-    'falling_card': 'floating_card',
-    'falling_snow': 'snowing',
-    'fan': 'hand_fan',
-    'fan_(electric)': 'electric_fan',
-    'fan_(handheld)': 'hand_fan',
-    'fanchild': 'if_they_mated',
-    'fang_necklace': 'tooth_necklace',
-    'fans': 'hand_fan',
-    'fat_folds': 'fat_rolls',
-    'fat_thighs': 'thick_thighs',
-    'faux_finnish': 'ranguage',
-    'faux_greek': 'ranguage',
-    'faux_wings': 'fake_wings',
-    'fear': 'scared',
-    'feather': 'feathers',
-    'feather_earring': 'feather_earrings',
-    'feather_hat_ornament': 'hat_feather',
-    'feather_in_hair': 'feather_hair_ornament',
-    'feather_in_hat': 'hat_feather',
-    'feather_pen': 'quill',
-    'feather_wings': 'feathered_wings',
-    'feeding_viewer': 'incoming_food',
-    'feet_focus': 'foot_focus',
-    'felatio': 'fellatio',
-    'fell_down': 'fallen_down',
-    'female_ejaculation_through_clothing': 'female_ejaculation_through_clothes',
-    'female_fingers_in_male_anus': 'prostate_milking',
-    'female_furry': 'furry_female',
-    'female_on_futa': 'futa_with_female',
-    'female_on_top': 'girl_on_top',
-    'female_sign': 'venus_symbol',
-    'female_solo': 'solo',
-    'female_symbol': 'venus_symbol',
-    'femboy': 'otoko_no_ko',
-    'fidget': 'fidgeting',
-    'fiery_eye': 'flaming_eye',
-    'fiery_eyes': 'flaming_eyes',
-    'fiery_hand': 'flaming_hand',
-    'fiery_horn': 'fiery_horns',
-    'fiery_sword': 'flaming_sword',
-    'fiery_weapon': 'flaming_weapon',
-    'fight': 'fighting',
-    'fighting_kimono': 'dougi',
-    'figurine': 'figure',
-    'filming': 'recording',
-    'filmstrip': 'film_strip',
-    'fin': 'fins',
-    'fin_ears': 'head_fins',
-    'finger_armor_ring': 'claw_ring',
-    'finger_camera': 'finger_frame',
-    'finger_horns': 'horns_pose',
-    'finger_in_mouth': 'finger_in_own_mouth',
-    'finger_in_panties': 'hand_in_panties',
-    'finger_inside_mouth': 'finger_in_own_mouth',
-    'finger_licking': 'licking_finger',
-    'finger_nails': 'fingernails',
-    'finger_number': 'finger_counting',
-    'finger_on_another\'s_lips': 'finger_to_another\'s_mouth',
-    'finger_on_lips': 'finger_to_mouth',
-    'finger_on_mouth': 'finger_to_mouth',
-    'finger_raised': 'index_finger_raised',
-    'finger_smile': 'fingersmile',
-    'finger_suck': 'finger_sucking',
-    'finger_to_another\'s_chin': 'hand_on_another\'s_chin',
-    'finger_to_chin': 'finger_to_own_chin',
-    'finger_to_lips': 'finger_to_mouth',
-    'fingering_ass': 'anal_fingering',
-    'fingering_asshole': 'anal_fingering',
-    'fingerless_glove': 'fingerless_gloves',
-    'fingernail': 'fingernails',
-    'fingers_in_mouth': 'finger_in_own_mouth',
-    'fingers_in_pussy': 'fingering',
-    'fingers_inside_mouth': 'finger_in_own_mouth',
-    'fire-tipped_tail': 'flame-tipped_tail',
-    'fire_background': 'fiery_background',
-    'fire_ball': 'fireball',
-    'fire_fist': 'flaming_hand',
-    'fire_hair': 'fiery_hair',
-    'fire_horns': 'fiery_horns',
-    'fire_magic': 'pyrokinesis',
-    'fire_manipulation': 'pyrokinesis',
-    'fire_print': 'flame_print',
-    'fire_spit': 'breathing_fire',
-    'fire_sword': 'flaming_sword',
-    'fire_tail': 'fiery_tail',
-    'fire_weapon': 'flaming_weapon',
-    'fire_wings': 'fiery_wings',
-    'firearm': 'gun',
-    'fireball_(fire)': 'fireball',
-    'fireballs': 'fireball',
-    'fireman': 'firefighter',
-    'firework': 'fireworks',
-    'fish_bones': 'fish_bone',
-    'fish_bowl': 'fishbowl',
-    'fish_ears': 'head_fins',
-    'fishbone': 'fish_bone',
-    'fishbones': 'fish_bone',
-    'fishing_lines': 'fishing_line',
-    'fishing_pole': 'fishing_rod',
-    'fishman': 'fish_boy',
-    'fishnet': 'fishnets',
-    'fishnet_shirt': 'fishnet_top',
-    'fishtank': 'fish_tank',
-    'fist': 'clenched_hand',
-    'fistbump': 'fist_bump',
-    'fists': 'clenched_hands',
-    'fivesome': 'group_sex',
-    'flags': 'flag',
-    'flame': 'fire',
-    'flame_background': 'fiery_background',
-    'flame_sword': 'flaming_sword',
-    'flame_tipped_tail': 'flame-tipped_tail',
-    'flame_weapon': 'flaming_weapon',
-    'flames': 'fire',
-    'flaming_hair': 'fiery_hair',
-    'flaming_tail': 'fiery_tail',
-    'flaming_tip_tail': 'flame-tipped_tail',
-    'flan': 'pudding',
-    'flare_pants': 'bell-bottoms',
-    'flares_(pants)': 'bell-bottoms',
-    'flat_chested': 'flat_chest',
-    'flat_colors': 'flat_color',
-    'flat_gaze': 'jitome',
-    'flat_grab': 'flat_chest_grab',
-    'flat_top': 'flattop',
-    'flatchest': 'flat_chest',
-    'flats_dangling': 'shoe_dangle',
-    'flench': 'ranguage',
-    'flesh_fang': 'skin_fang',
-    'fleshlight': 'artificial_vagina',
-    'fleur_de_lis': 'fleur-de-lis',
-    'flex': 'flexing',
-    'flies': 'fly',
-    'flight_jacket': 'bomber_jacket',
-    'flip_flops': 'flip-flops',
-    'flipflops': 'flip-flops',
-    'flipping_off': 'middle_finger',
-    'floating_bowtie': 'floating_neckwear',
-    'floating_capelet': 'floating_cape',
-    'floating_cloak': 'floating_cape',
-    'floating_eye': 'disembodied_eye',
-    'floating_hand': 'disembodied_hand',
-    'floating_in_water': 'afloat',
-    'floating_neck_ribbon': 'floating_neckwear',
-    'floating_necktie': 'floating_neckwear',
-    'floating_swords': 'floating_sword',
-    'floating_wings': 'detached_wings',
-    'floppy_sleeves': 'oversized_clothes',
-    'floral_pattern': 'floral_print',
-    'florence_flask': 'round-bottom_flask',
-    'flower_background': 'floral_background',
-    'flower_crown': 'head_wreath',
-    'flower_earring': 'flower_earrings',
-    'flower_hair_ornament': 'hair_flower',
-    'flower_in_breast_pocket': 'corsage',
-    'flower_in_hair': 'hair_flower',
-    'flower_petals': 'petals',
-    'flower_print': 'floral_print',
-    'flower_shaped_pupils': 'flower-shaped_pupils',
-    'flower_viewing': 'hanami',
-    'flowerpot': 'flower_pot',
-    'flowers': 'flower',
-    'flowing_scarf': 'floating_scarf',
-    'flush': 'blush',
-    'flushed': 'blush',
-    'flying_kiss': 'blowing_kiss',
-    'flying_leaves': 'falling_leaves',
-    'flying_petals': 'falling_petals',
-    'flying_ship': 'airship',
-    'flying_skull': 'floating_skull',
-    'flying_sweatdrop': 'flying_sweatdrops',
-    'flying_sword': 'floating_sword',
-    'fmm_threesome': 'mmf_threesome',
-    'focus_blur': 'depth_of_field',
-    'folded_arms': 'crossed_arms',
-    'folded_sleeves': 'sleeves_rolled_up',
-    'folders': 'folder',
-    'followers': 'milestone_celebration',
-    'fondle': 'groping',
-    'fondling': 'groping',
-    'fondling_testicles': 'caressing_testicles',
-    'food_animal': 'food-themed_creature',
-    'food_bowl': 'pet_bowl',
-    'food_hair_ornament': 'food-themed_hair_ornament',
-    'food_in_pussy': 'food_insertion',
-    'food_of_doom': 'bad_food',
-    'food_on_cheek': 'food_on_face',
-    'food_on_finger': 'food_on_hand',
-    'food_themed_background': 'food-themed_background',
-    'food_themed_clothes': 'food-themed_clothes',
-    'food_themed_earrings': 'food-themed_earrings',
-    'food_themed_hair_ornament': 'food-themed_hair_ornament',
-    'foot': 'feet',
-    'foot_hold': 'holding_with_feet',
-    'foot_lick': 'licking_foot',
-    'foot_licking': 'licking_foot',
-    'foot_on_chair': 'feet_on_chair',
-    'foot_tickling': 'tickling_feet',
-    'football': 'soccer',
-    'football_(object)': 'soccer_ball',
-    'footprint': 'footprints',
-    'footwear_removed': 'unworn_footwear',
-    'force_field': 'energy_barrier',
-    'forced_blowjob': 'irrumatio',
-    'forced_fellatio': 'irrumatio',
-    'forehead_gem': 'forehead_jewel',
-    'forehead_kiss': 'kissing_forehead',
-    'forehead_scar': 'scar_on_forehead',
-    'forehead_to_forehead': 'forehead-to-forehead',
-    'forelocks': 'sidelocks',
-    'fork_in_mouth': 'utensil_in_mouth',
-    'formal': 'formal_clothes',
-    'fortissimo_hair_ornament': 'musical_note_hair_ornament',
-    'fountain_pen': 'nib_pen_(object)',
-    'four-poster_bed': 'canopy_bed',
-    'four_arms': 'extra_arms',
-    'four_leaf_clover': 'four-leaf_clover',
-    'foursome': 'group_sex',
-    'fox_fire': 'hitodama',
-    'fox_hand_sign': 'fox_shadow_puppet',
-    'foxes': 'fox',
-    'french': 'french_text',
-    'french_bread': 'baguette',
-    'fridge': 'refrigerator',
-    'fried_shrimp': 'shrimp_tempura',
-    'frill': 'frills',
-    'frilled': 'frills',
-    'frilled_bikini_bottom': 'frilled_bikini',
-    'frilled_blouse': 'frilled_shirt',
-    'frilled_yukata': 'frilled_kimono',
-    'frilly': 'frills',
-    'frilly_dress': 'frilled_dress',
-    'frilly_skirt': 'frilled_skirt',
-    'fringe': 'fringe_trim',
-    'frog_button': 'pankou',
-    'frog_eyes': 'horizontal_pupils',
-    'frogs': 'frog',
-    'from_behind_position': 'sex_from_behind',
-    'front-tie_bikini': 'front-tie_bikini_top',
-    'front_cover': 'cover',
-    'front_tie_top': 'front-tie_top',
-    'frosted_tips': 'colored_tips',
-    'frosting': 'icing',
-    'frosting_bag': 'pastry_bag',
-    'frotting': 'frottage',
-    'frowning': 'frown',
-    'fruits': 'fruit',
-    'fuck': 'sex',
-    'fucking': 'sex',
-    'full_body_tattoo': 'full-body_tattoo',
-    'full_censor': 'blank_censor',
-    'full_face_blush': 'full-face_blush',
-    'full_length_zipper': 'full-length_zipper',
-    'full_package_futanari': 'full-package_futanari',
-    'fullmoon': 'full_moon',
-    'funeral_photo': 'iei',
-    'funnels': 'funnels_(gundam)',
-    'fur-lined_boots': 'fur-trimmed_boots',
-    'fur-lined_jacket': 'fur-trimmed_jacket',
-    'fur-trimmed_hat': 'fur-trimmed_headwear',
-    'fur_lining': 'fur_trim',
-    'furrowed_eyebrows': 'furrowed_brow',
-    'futa': 'futanari',
-    'futa_on_female': 'futa_with_female',
-    'futa_on_futa': 'futa_with_futa',
-    'futa_on_male': 'futa_with_male',
-    'futuristic': 'science_fiction',
-    'g_string': 'g-string',
-    'gae_bolg': 'gae_bolg_(fate)',
-    'gae_buidhe': 'gae_buidhe_(fate)',
-    'gae_dearg': 'gae_dearg_(fate)',
-    'gag_removed': 'unworn_gag',
-    'gaijin4koma': 'gaijin_4koma_(meme)',
-    'gaijin_4koma': 'gaijin_4koma_(meme)',
-    'gainax_pose': 'gunbuster_pose',
-    'galaxies': 'galaxy',
-    'galoshes': 'rubber_boots',
-    'game_cover': 'video_game_cover',
-    'game_sprite': 'sprite',
-    'gameboy': 'game_boy',
-    'gamer_chair': 'gaming_chair',
-    'gaming': 'playing_games',
-    'gang_bang': 'gangbang',
-    'gang_rape': 'gangbang',
-    'gang_sex': 'gangbang',
-    'gangrape': 'gangbang',
-    'gangsex': 'gangbang',
-    'gape': 'gaping',
-    'gar': 'manly',
-    'garbage': 'trash',
-    'garbage_bag': 'trash_bag',
-    'garbage_bags': 'trash_bag',
-    'garbage_can': 'trash_can',
-    'garter_strap': 'garter_straps',
-    'garterbelt': 'garter_belt',
-    'gas-mask': 'gas_mask',
-    'gate_of_babylon': 'gate_of_babylon_(fate)',
-    'gates_of_babylon': 'gate_of_babylon_(fate)',
-    'gatling': 'gatling_gun',
-    'gauntlet': 'gauntlets',
-    'gay': 'yaoi',
-    'gear': 'gears',
-    'gelman': 'ranguage',
-    'gem_on_chest': 'chest_jewel',
-    'gem_ring': 'ornate_ring',
-    'gems': 'gem',
-    'gemstone': 'gem',
-    'gemstone_ring': 'ornate_ring',
-    'gemstones': 'gem',
-    'genderbend': 'genderswap',
-    'general-purpose_machine_gun': 'machine_gun',
-    'genuflecting': 'on_one_knee',
-    'german': 'german_text',
-    'gerudo_link': 'gerudo_set_(zelda)',
-    'gesturing': 'gesture',
-    'geung_si': 'jiangshi',
-    'gewehr_98': 'mauser_98',
-    'ghosts': 'ghost',
-    'gi': 'dougi',
-    'giant_animal': 'oversized_animal',
-    'giant_food': 'oversized_food',
-    'giant_syringe': 'large_syringe',
-    'gifts': 'gift',
-    'gigantic_breast': 'gigantic_breasts',
-    'gijinka': 'personification',
-    'gingko_leaf': 'ginkgo_leaf',
-    'gingko_tree': 'ginkgo_tree',
-    'ginkgo': 'ginkgo_tree',
-    'girl\'s_love': 'yuri',
-    'girl_in_a_box': 'in_box',
-    'girl_in_a_cup': 'in_cup',
-    'girl_in_bucket': 'in_bucket',
-    'girl_in_food': 'in_food',
-    'girl_love': 'yuri',
-    'girls_are_praying': 'shoujo_kitou-chuu',
-    'girls_love': 'yuri',
-    'girls_playing_games': 'playing_games',
-    'gladiator_boots': 'gladiator_sandals',
-    'glaive': 'glaive_(polearm)',
-    'glare': 'glaring',
-    'glasses_chain': 'eyewear_strap',
-    'glasses_off': 'unworn_eyewear',
-    'glasses_on_head': 'eyewear_on_head',
-    'glasses_removed': 'unworn_eyewear',
-    'glistening_skin': 'shiny_skin',
-    'global_miku': 'worldwide_miku',
-    'glock_17': 'glock',
-    'glock_18c': 'glock',
-    'glock_19': 'glock',
-    'gloomy': 'gloom_(expression)',
-    'gloryhole': 'glory_hole',
-    'glove': 'gloves',
-    'glove_bite': 'biting_glove',
-    'glove_biting': 'biting_glove',
-    'glove_removed': 'unworn_gloves',
-    'gloves_removed': 'unworn_gloves',
-    'glow': 'glowing',
-    'glow_stick': 'glowstick',
-    'gluteal_fold': 'ass_visible_through_thighs',
-    'gluteal_fold_peek': 'underbutt',
-    'goat_eyes': 'horizontal_pupils',
-    'goblet': 'chalice',
-    'goblin_female': 'female_goblin',
-    'god_rays': 'sunbeam',
-    'goggle_on_head': 'goggles_on_head',
-    'goggles_off': 'unworn_goggles',
-    'goggles_on_hat': 'goggles_on_headwear',
-    'goggles_on_helmet': 'goggles_on_headwear',
-    'goggles_removed': 'unworn_goggles',
-    'gogogogo': 'menacing_(jojo)',
-    'gohan': 'rice',
-    'going_on_date': 'dating',
-    'gold-framed_eyewear': 'yellow-framed_eyewear',
-    'gold_eyes': 'yellow_eyes',
-    'gold_hair': 'blonde_hair',
-    'gold_necktie': 'yellow_necktie',
-    'golden_eyes': 'yellow_eyes',
-    'goo': 'slime_(substance)',
-    'goo_girl': 'slime_girl',
-    'googirl': 'slime_girl',
-    'gore': 'guro',
-    'gorgon': 'snake_hair',
-    'gosurori': 'gothic_lolita',
-    'goth': 'goth_fashion',
-    'goth_girl': 'goth_fashion',
-    'gothic': 'goth_fashion',
-    'gothloli': 'gothic_lolita',
-    'grabbing_another\'s_wrist': 'holding_another\'s_wrist',
-    'grabbing_breasts': 'grabbing_another\'s_breast',
-    'grabbing_leg': 'leg_grab',
-    'grabbing_own_arm': 'holding_own_arm',
-    'grabbing_own_wrist': 'holding_own_wrist',
-    'grabbing_sheet': 'sheet_grab',
-    'gradient_fingernails': 'gradient_nails',
-    'gradient_kneehighs': 'gradient_legwear',
-    'gradient_leggings': 'gradient_legwear',
-    'gradient_pantyhose': 'gradient_legwear',
-    'gradient_socks': 'gradient_legwear',
-    'gradient_thighhighs': 'gradient_legwear',
-    'graduate_cap': 'mortarboard',
-    'graduation_cap': 'mortarboard',
-    'grail': 'chalice',
-    'grainy': 'film_grain',
-    'gramophone': 'phonograph',
-    'grape': 'grapes',
-    'graphic_shirt': 'print_shirt',
-    'grass_in_mouth': 'stalk_in_mouth',
-    'grave_stone': 'tombstone',
-    'gravestone': 'tombstone',
-    'gray_background': 'grey_background',
-    'gray_belt': 'grey_belt',
-    'gray_bikini': 'grey_bikini',
-    'gray_bodysuit': 'grey_bodysuit',
-    'gray_border': 'grey_border',
-    'gray_bra': 'grey_bra',
-    'gray_dress': 'grey_dress',
-    'gray_eyes': 'grey_eyes',
-    'gray_footwear': 'grey_footwear',
-    'gray_gloves': 'grey_gloves',
-    'gray_hair': 'grey_hair',
-    'gray_hoodie': 'grey_hoodie',
-    'gray_jacket': 'grey_jacket',
-    'gray_leotard': 'grey_leotard',
-    'gray_panties': 'grey_panties',
-    'gray_pants': 'grey_pants',
-    'gray_pantyhose': 'grey_pantyhose',
-    'gray_shirt': 'grey_shirt',
-    'gray_shorts': 'grey_shorts',
-    'gray_skin': 'grey_skin',
-    'gray_skirt': 'grey_skirt',
-    'gray_sweater': 'grey_sweater',
-    'gray_theme': 'grey_theme',
-    'gray_vest': 'grey_vest',
-    'gray_wings': 'grey_wings',
-    'grayscale': 'greyscale',
-    'greek_clothes': 'ancient_greek_clothes',
-    'green-eyes': 'green_eyes',
-    'green-framed_glasses': 'green-framed_eyewear',
-    'green_backpack': 'green_bag',
-    'green_bikini_bottom': 'green_bikini',
-    'green_bikini_top': 'green_bikini',
-    'green_blouse': 'green_shirt',
-    'green_boots': 'green_footwear',
-    'green_earrings': 'earrings',
-    'green_eyelashes': 'colored_eyelashes',
-    'green_eyepatch': 'colored_eyepatch',
-    'green_fingernails': 'green_nails',
-    'green_handbag': 'green_bag',
-    'green_jabot': 'green_ascot',
-    'green_kneehighs': 'green_socks',
-    'green_lipstick': 'green_lips',
-    'green_pillow': 'pillow',
-    'green_shoes': 'green_footwear',
-    'green_swimsuit': 'green_one-piece_swimsuit',
-    'green_yukata': 'green_kimono',
-    'greeneyes': 'green_eyes',
-    'greenhair': 'green_hair',
-    'grenades': 'grenade',
-    'grey_bikini_bottom': 'grey_bikini',
-    'grey_bikini_top': 'grey_bikini',
-    'grey_blouse': 'grey_shirt',
-    'grey_boots': 'grey_footwear',
-    'grey_earrings': 'earrings',
-    'grey_eyelashes': 'colored_eyelashes',
-    'grey_fingernails': 'grey_nails',
-    'grey_horn': 'grey_horns',
-    'grey_jabot': 'grey_ascot',
-    'grey_kneehighs': 'grey_socks',
-    'grey_pillow': 'pillow',
-    'grey_shoes': 'grey_footwear',
-    'grey_swimsuit': 'grey_one-piece_swimsuit',
-    'grey_underwear_(male)': 'grey_male_underwear',
-    'griffin_and_kryuger_military_uniform': 'griffin_&_kryuger_military_uniform',
-    'grinning': 'grin',
-    'gritted_teeth': 'clenched_teeth',
-    'gritting_teeth': 'clenched_teeth',
-    'grocery_cart': 'shopping_cart',
-    'grope': 'groping',
-    'group': 'everyone',
-    'group_shot': 'group_picture',
-    'groupsex': 'group_sex',
-    'guitar_pick': 'plectrum',
-    'gull': 'seagull',
-    'gum': 'chewing_gum',
-    'gun_case': 'weapon_case',
-    'gun_magazine': 'magazine_(weapon)',
-    'gunfire': 'firing',
-    'gunpoint': 'at_gunpoint',
-    'guns': 'gun',
-    'guy_on_top': 'boy_on_top',
-    'guys_only': 'male_focus',
-    'gyaru_peace': 'gyaru_v',
-    'gym_bag': 'duffel_bag',
-    'gym_ball': 'exercise_ball',
-    'gym_clothes': 'gym_uniform',
-    'gym_equipment_shed': 'gym_storeroom',
-    'gym_storage_room': 'gym_storeroom',
-    'gymnasium': 'gym',
-    'gymnast': 'gymnastics',
-    'gymnast_leotard': 'athletic_leotard',
-    'gynoid': 'android',
-    'gyouza': 'jiaozi',
-    'gyoza': 'jiaozi',
-    'h&k_ump40': 'h&k_ump',
-    'h&k_ump45': 'h&k_ump',
-    'h&k_ump9': 'h&k_ump',
-    'hadaka_apron': 'naked_apron',
-    'hair_accessories': 'hair_ornament',
-    'hair_accessory': 'hair_ornament',
-    'hair_band': 'hairband',
-    'hair_bells': 'hair_bell',
-    'hair_blowing': 'floating_hair',
-    'hair_bobble': 'hair_bobbles',
-    'hair_bows': 'hair_bow',
-    'hair_braid': 'braid',
-    'hair_brushing': 'brushing_hair',
-    'hair_bun': 'single_hair_bun',
-    'hair_buns': 'double_bun',
-    'hair_clip': 'hairclip',
-    'hair_clips': 'hairclip',
-    'hair_comb': 'comb',
-    'hair_cones': 'cone_hair_bun',
-    'hair_covering_eyes': 'hair_over_eyes',
-    'hair_cubes': 'cube_hair_ornament',
-    'hair_decs': 'hair_ornament',
-    'hair_dressing': 'hairdressing',
-    'hair_feather': 'feather_hair_ornament',
-    'hair_feathers': 'feather_hair_ornament',
-    'hair_flowers': 'hair_flower',
-    'hair_in_mouth': 'hair_in_own_mouth',
-    'hair_in_scarf': 'enpera',
-    'hair_leaf': 'leaf_hair_ornament',
-    'hair_loc': 'dreadlocks',
-    'hair_locs': 'dreadlocks',
-    'hair_loop': 'hair_rings',
-    'hair_loops': 'hair_rings',
-    'hair_on_breasts': 'hair_over_breasts',
-    'hair_ornament_removed': 'unworn_hair_ornament',
-    'hair_ornaments': 'hair_ornament',
-    'hair_over_eye': 'hair_over_one_eye',
-    'hair_past_feet': 'absurdly_long_hair',
-    'hair_past_waist': 'very_long_hair',
-    'hair_pin': 'hairpin',
-    'hair_pom_pom': 'pom_pom_hair_ornament',
-    'hair_pull': 'grabbing_another\'s_hair',
-    'hair_ribbons': 'hair_ribbon',
-    'hair_ring': 'hair_rings',
-    'hair_sticks': 'hair_stick',
-    'hair_tassel': 'tassel_hair_ornament',
-    'hair_ties': 'hair_tie',
-    'hair_tousle': 'ruffling_hair',
-    'hair_tube': 'hair_tubes',
-    'hair_tucking': 'tucking_hair',
-    'hair_tussle': 'ruffling_hair',
-    'hair_twirl': 'twirling_hair',
-    'hair_twirling': 'twirling_hair',
-    'hair_vents': 'hair_intakes',
-    'hairband_bow': 'bow_hairband',
-    'hairband_removed': 'unworn_hairband',
-    'hairbell': 'hair_bell',
-    'hairbells': 'hair_bell',
-    'hairbow': 'hair_bow',
-    'hairbrush': 'hair_brush',
-    'hairbrushing': 'brushing_hair',
-    'hairbun': 'single_hair_bun',
-    'hairclips': 'hairclip',
-    'haircut': 'cutting_hair',
-    'hairdown': 'hair_down',
-    'hairdryer': 'hair_dryer',
-    'hairflower': 'hair_flower',
-    'hairlocs': 'dreadlocks',
-    'hairpins': 'hairpin',
-    'hairtie': 'hair_tie',
-    'hairy_arms': 'arm_hair',
-    'hairy_ass': 'ass_hair',
-    'hairy_chest': 'chest_hair',
-    'hairy_forearms': 'arm_hair',
-    'hairy_hands': 'hand_hair',
-    'hairy_pussy': 'pubic_hair',
-    'hairy_thighs': 'leg_hair',
-    'hakama': 'hakama_skirt',
-    'hakama_shorts': 'hakama_pants',
-    'hakama_skirt': 'hakama_short_skirt',
-    'half-rim_glasses': 'semi-rimless_eyewear',
-    'half_apron': 'waist_apron',
-    'half_down_half_up': 'half_updo',
-    'half_rim_glasses': 'semi-rimless_eyewear',
-    'halftone_texture': 'halftone',
-    'halloween_basket': 'halloween_bucket',
-    'halter': 'halterneck',
-    'halter_top': 'halterneck',
-    'haltertop': 'halterneck',
-    'hamburger': 'burger',
-    'hanami_dango': 'sanshoku_dango',
-    'hanazono_room': 'rei_no_pool',
-    'hand_bag': 'handbag',
-    'hand_behind_back': 'arm_behind_back',
-    'hand_behind_head': 'arm_behind_head',
-    'hand_between_breasts': 'arm_between_breasts',
-    'hand_gun': 'handgun',
-    'hand_holding': 'holding_hands',
-    'hand_in_hair': 'hand_in_own_hair',
-    'hand_in_shirt': 'hand_under_shirt',
-    'hand_job': 'handjob',
-    'hand_kiss': 'kissing_hand',
-    'hand_on_ass': 'hand_on_own_ass',
-    'hand_on_belly': 'hand_on_own_stomach',
-    'hand_on_cheek': 'hand_on_own_cheek',
-    'hand_on_chest': 'hand_on_own_chest',
-    'hand_on_chin': 'hand_on_own_chin',
-    'hand_on_ear': 'hand_on_own_ear',
-    'hand_on_face': 'hand_on_own_face',
-    'hand_on_glasses': 'hand_on_eyewear',
-    'hand_on_hair': 'hand_in_own_hair',
-    'hand_on_hat': 'hand_on_headwear',
-    'hand_on_hip': 'hand_on_own_hip',
-    'hand_on_knee': 'hand_on_own_knee',
-    'hand_on_lips': 'hand_to_own_mouth',
-    'hand_on_own_belly': 'hand_on_own_stomach',
-    'hand_on_own_throat': 'hand_on_own_neck',
-    'hand_on_stomach': 'hand_on_own_stomach',
-    'hand_on_waist': 'hand_on_own_hip',
-    'hand_outstretched': 'outstretched_hand',
-    'hand_pov': 'pov_hands',
-    'hand_print': 'handprint',
-    'hand_puppets': 'hand_puppet',
-    'hand_raised': 'hand_up',
-    'hand_seal': 'kuji-in',
-    'hand_to_cheek': 'hand_on_own_cheek',
-    'hand_to_chest': 'hand_on_own_chest',
-    'hand_to_chin': 'hand_on_own_chin',
-    'hand_to_face': 'hand_on_own_face',
-    'hand_to_lip': 'hand_to_own_mouth',
-    'hand_to_mouth': 'hand_to_own_mouth',
-    'hand_to_own_chest': 'hand_on_own_chest',
-    'hand_to_own_face': 'hand_on_own_face',
-    'hand_up_shirt': 'hand_under_shirt',
-    'handbra': 'covering_breasts',
-    'handcuff': 'handcuffs',
-    'handheld': 'handheld_game_console',
-    'handholding': 'holding_hands',
-    'handjob_from_behind': 'reach-around',
-    'handpuppet': 'hand_puppet',
-    'hands_above_head': 'arms_up',
-    'hands_and_knees': 'all_fours',
-    'hands_behind_back': 'arms_behind_back',
-    'hands_behind_head': 'arms_behind_head',
-    'hands_between_legs': 'hand_between_legs',
-    'hands_bound': 'bound_wrists',
-    'hands_clasped': 'own_hands_clasped',
-    'hands_focus': 'hand_focus',
-    'hands_in_lap': 'hands_on_lap',
-    'hands_in_sleeves': 'hands_in_opposite_sleeves',
-    'hands_on_cheek': 'hands_on_own_cheeks',
-    'hands_on_cheeks': 'hands_on_own_cheeks',
-    'hands_on_chest': 'hands_on_own_chest',
-    'hands_on_face': 'hands_on_own_face',
-    'hands_on_glass': 'hand_on_glass',
-    'hands_on_hat': 'hands_on_headwear',
-    'hands_on_hips': 'hands_on_own_hips',
-    'hands_on_knees': 'hands_on_own_knees',
-    'hands_on_waist': 'hands_on_own_hips',
-    'hands_on_wall': 'hand_on_wall',
-    'hands_outstretched': 'outstretched_hand',
-    'hands_over_ears': 'covering_own_ears',
-    'hands_over_eyes': 'covering_own_eyes',
-    'hands_over_mouth': 'covering_own_mouth',
-    'hands_over_own_mouth': 'covering_own_mouth',
-    'hands_raised': 'hands_up',
-    'hands_tied': 'bound_wrists',
-    'hands_to_cheek': 'hands_on_own_cheeks',
-    'hands_to_cheeks': 'hands_on_own_cheeks',
-    'hands_to_chest': 'hands_on_own_chest',
-    'hands_to_face': 'hands_on_own_face',
-    'hands_to_mouth': 'hand_to_own_mouth',
-    'hands_to_own_mouth': 'hand_to_own_mouth',
-    'hands_together': 'own_hands_together',
-    'hands_under_clothes': 'hand_under_clothes',
-    'handwraps': 'hand_wraps',
-    'haneri': 'han\'eri',
-    'hanging_boob': 'hanging_breasts',
-    'hangingboob': 'hanging_breasts',
-    'happy_valentine\'s_day': 'happy_valentine',
-    'harbin': 'harvin',
-    'harbour': 'harbor',
-    'hardhat': 'hard_hat',
-    'hardwood_floor': 'wooden_floor',
-    'harem_clothes': 'harem_outfit',
-    'hasunosora_school_uniform': 'hasu_no_sora_school_uniform',
-    'hat-less': 'no_headwear',
-    'hat_around_neck': 'hat_on_back',
-    'hat_backwards': 'backwards_hat',
-    'hat_behind_back': 'hat_on_back',
-    'hat_ears': 'hat_with_ears',
-    'hat_leaf': 'leaf_hat_ornament',
-    'hat_off': 'unworn_hat',
-    'hat_removed': 'unworn_hat',
-    'hat_ribbons': 'hat_ribbon',
-    'hatband': 'hat_ribbon',
-    'hatchet_(oriental)': 'nata_(tool)',
-    'hatless': 'no_headwear',
-    'hatted_pokemon': 'clothed_pokemon',
-    'hazel_eyes': 'yellow_eyes',
-    'hazeleyes': 'yellow_eyes',
-    'head-on': 'straight-on',
-    'head-to-head': 'heads_together',
-    'head_band': 'headband',
-    'head_between_ass': 'face_in_ass',
-    'head_bolt': 'screw_in_head',
-    'head_feathers': 'feather_hair',
-    'head_in_breasts': 'head_between_breasts',
-    'head_in_lap': 'lap_pillow',
-    'head_mounted_display': 'head-mounted_display',
-    'head_on_lap': 'lap_pillow',
-    'head_on_shoulder': 'head_on_another\'s_shoulder',
-    'head_pat': 'headpat',
-    'head_scarf': 'headscarf',
-    'head_screw': 'screw_in_head',
-    'head_sitting': 'sitting_on_head',
-    'head_to_head': 'heads_together',
-    'headboob': 'breasts_on_head',
-    'headbump': 'head_bump',
-    'headfins': 'head_fins',
-    'headphone': 'headphones',
-    'headphone_jack': 'audio_jack',
-    'heads-up-display': 'heads-up_display',
-    'heads_up_display': 'heads-up_display',
-    'headstone': 'tombstone',
-    'headwear_off': 'unworn_headwear',
-    'headwear_removed': 'unworn_headwear',
-    'headwings': 'head_wings',
-    'heart-shaped_balloon': 'heart_balloon',
-    'heart-shaped_buttons': 'heart_button',
-    'heart-shaped_glasses': 'heart-shaped_eyewear',
-    'heart-shaped_sunglasses': 'heart-shaped_eyewear',
-    'heart_ass_cutout': 'ass_cutout',
-    'heart_back_cutout': 'back_cutout',
-    'heart_box': 'heart-shaped_box',
-    'heart_buckle': 'heart-shaped_buckle',
-    'heart_cleavage_cutout': 'cleavage_cutout',
-    'heart_crotch_cutout': 'crotch_cutout',
-    'heart_earring': 'heart_earrings',
-    'heart_eye': 'heart-shaped_eyes',
-    'heart_eyes': 'heart-shaped_eyes',
-    'heart_hand_thumb_up_duo': 'heart_hands_failure',
-    'heart_monitor': 'cardiogram',
-    'heart_navel_cutout': 'navel_cutout',
-    'heart_pillow': 'heart-shaped_pillow',
-    'heart_ring': 'heart_o-ring',
-    'heart_shaped_pupils': 'heart-shaped_pupils',
-    'heart_tails': 'heart_tail',
-    'hearts': 'heart',
-    'hedge_(plant)': 'hedge',
-    'heel_boots': 'high_heel_boots',
-    'heel_raised': 'heel_up',
-    'heels': 'high_heels',
-    'heels_dangling': 'shoe_dangle',
-    'helmet_off': 'unworn_helmet',
-    'helmet_removed': 'unworn_helmet',
-    'hestia_(dungeon)_(cosplay)': 'hestia_(danmachi)_(cosplay)',
-    'hexagonal_background': 'honeycomb_background',
-    'hidden_mouth': 'covered_mouth',
-    'hidden_sex': 'stealth_sex',
-    'hiding_face': 'covering_face',
-    'hiding_mouth': 'covering_own_mouth',
-    'higanbana': 'spider_lily',
-    'highfive': 'high_five',
-    'highheels': 'high_heels',
-    'highlights': 'streaked_hair',
-    'hills': 'hill',
-    'himecut': 'hime_cut',
-    'himopan': 'side-tie_panties',
-    'hip_cutout': 'hip_vent',
-    'hip_grab': 'torso_grab',
-    'hip_lines': 'groin',
-    'hip_wings': 'low_wings',
-    'hips': 'hip_focus',
-    'historical_reference_connection': 'historical_name_connection',
-    'hit': 'milestone_celebration',
-    'hits': 'milestone_celebration',
-    'hizamakura': 'lap_pillow',
-    'hk416': 'h&k_hk416',
-    'hk_ump': 'h&k_ump',
-    'hokago_tea_time': 'ho-kago_tea_time',
-    'hold': 'holding',
-    'holding_another\'s_hand': 'holding_hands',
-    'holding_apple': 'holding_fruit',
-    'holding_arm': 'holding_own_arm',
-    'holding_backpack': 'holding_bag',
-    'holding_banknote': 'holding_money',
-    'holding_bat_(animal)': 'holding_animal',
-    'holding_bat_(baseball)': 'holding_baseball_bat',
-    'holding_bikini': 'holding_swimsuit',
-    'holding_bikini_bottom': 'holding_swimsuit',
-    'holding_bikini_top': 'holding_swimsuit',
-    'holding_camcorder': 'holding_camera',
-    'holding_cards': 'holding_card',
-    'holding_cellphone': 'holding_phone',
-    'holding_clothes': 'holding_unworn_clothes',
-    'holding_dildo': 'holding_sex_toy',
-    'holding_drinking_glass': 'holding_cup',
-    'holding_eyewear': 'holding_removed_eyewear',
-    'holding_gemstone': 'holding_gem',
-    'holding_glass': 'holding_cup',
-    'holding_glasses': 'holding_removed_eyewear',
-    'holding_goblet': 'holding_cup',
-    'holding_guitar': 'holding_instrument',
-    'holding_guitar_pick': 'holding_plectrum',
-    'holding_hair': 'holding_own_hair',
-    'holding_halberd': 'holding_polearm',
-    'holding_hand': 'hand_grab',
-    'holding_head': 'holding_detached_head',
-    'holding_innertube': 'holding_swim_ring',
-    'holding_jack-o\'-lantern': 'holding_pumpkin',
-    'holding_katana': 'holding_sword',
-    'holding_kiseru': 'holding_smoking_pipe',
-    'holding_lance': 'holding_polearm',
-    'holding_lifebuoy': 'holding_swim_ring',
-    'holding_mug': 'holding_cup',
-    'holding_naginata': 'holding_polearm',
-    'holding_object': 'holding',
-    'holding_parasol': 'holding_umbrella',
-    'holding_peach': 'holding_fruit',
-    'holding_penlight_glowstick': 'holding_glowstick',
-    'holding_pipe': 'holding_smoking_pipe',
-    'holding_playing_card': 'holding_card',
-    'holding_plush': 'holding_stuffed_toy',
-    'holding_pokeball': 'holding_poke_ball',
-    'holding_present': 'holding_gift',
-    'holding_purse': 'holding_bag',
-    'holding_railing': 'hand_on_railing',
-    'holding_rapier': 'holding_sword',
-    'holding_recorder': 'holding_flute',
-    'holding_remote': 'holding_remote_control',
-    'holding_sakazuki': 'holding_cup',
-    'holding_scanner': 'holding_barcode_scanner',
-    'holding_severed_head': 'holding_detached_head',
-    'holding_sketchpad': 'holding_sketchbook',
-    'holding_sparkler': 'holding_fireworks',
-    'holding_spear': 'holding_polearm',
-    'holding_strawberry': 'holding_fruit',
-    'holding_stuffed_animal': 'holding_stuffed_toy',
-    'holding_sunglasses': 'holding_removed_eyewear',
-    'holding_teacup': 'holding_cup',
-    'holding_violin': 'holding_instrument',
-    'holding_walking_stick': 'holding_cane',
-    'holographic_display': 'holographic_monitor',
-    'holographic_screen': 'holographic_monitor',
-    'hololive_bright_outfit': 'hololive_idol_uniform_(bright)',
-    'hololive_idol_uniform': 'hololive_idol_uniform_(origin)',
-    'hololive_origin_outfit': 'hololive_idol_uniform_(origin)',
-    'holstered_weapon': 'holstered',
-    'homurahara_academy_school_uniform': 'homurabara_academy_school_uniform',
-    'homurahara_academy_uniform': 'homurabara_academy_school_uniform',
-    'hooded_blouse': 'hooded_shirt',
-    'hoodie_dress': 'long_hoodie',
-    'hoodie_vest': 'hooded_vest',
-    'hoof': 'hooves',
-    'hoop_earring': 'hoop_earrings',
-    'horn': 'single_horn',
-    'horn_pose': 'horns_pose',
-    'horn_ribbons': 'horn_ribbon',
-    'horror_(expression)': 'horrified',
-    'horse_armor': 'barding',
-    'horse_cock': 'horse_penis',
-    'horse_man': 'horse_boy',
-    'horsecock': 'horse_penis',
-    'horses': 'horse',
-    'hortensia_(flower)': 'hydrangea',
-    'hot_pants': 'short_shorts',
-    'hot_spring': 'onsen',
-    'hot_springs': 'onsen',
-    'hotdog': 'hot_dog',
-    'hotdogging': 'buttjob',
-    'hotpants': 'short_shorts',
-    'hotspring': 'onsen',
-    'houkago_tea_time': 'ho-kago_tea_time',
-    'house_wife': 'housewife',
-    'houses': 'house',
-    'howto': 'how_to',
-    'hp_bar': 'health_bar',
-    'hud': 'heads-up_display',
-    'huge_boobs': 'huge_breasts',
-    'huge_breast': 'huge_breasts',
-    'huge_gun': 'huge_weapon',
-    'huge_insertion': 'large_insertion',
-    'huge_sword': 'huge_weapon',
-    'huge_tits': 'huge_breasts',
-    'hugging': 'hug',
-    'hugging_animal': 'animal_hug',
-    'hugging_another\'s_legs': 'hugging_another\'s_leg',
-    'hugging_arm': 'arm_hug',
-    'hugging_knees': 'hugging_own_legs',
-    'hugging_legs': 'hugging_own_legs',
-    'hugging_with_tail': 'tail_wrap',
-    'hyakkaou_academy_uniform': 'hyakkaou_academy_school_uniform',
-    'hydrangeas': 'hydrangea',
-    'hyper_ball': 'ultra_ball',
-    'hypnotism': 'hypnosis',
-    'ice-cream': 'ice_cream',
-    'ice-cream_cone': 'ice_cream_cone',
-    'ice-cream_cones': 'ice_cream_cone',
-    'ice-creams': 'ice_cream',
-    'ice_box': 'cooler',
-    'ice_cream_cones': 'ice_cream_cone',
-    'ice_creams': 'ice_cream',
-    'ice_cubes': 'ice_cube',
-    'ice_magic': 'cryokinesis',
-    'ice_manipulation': 'cryokinesis',
-    'icecream': 'ice_cream',
-    'icecream_cone': 'ice_cream_cone',
-    'icecream_cones': 'ice_cream_cone',
-    'icecreams': 'ice_cream',
-    'icelolly': 'popsicle',
-    'ichigo_pantsu': 'strawberry_panties',
-    'icicles': 'icicle',
-    'identity_censor': 'censored_identity',
-    'image_fill': 'double_exposure',
-    'imagination': 'imagining',
-    'imminent_sex': 'imminent_penetration',
-    'implied_virgin': 'virgin',
-    'impossible_clothing': 'impossible_clothes',
-    'impregnate': 'impregnation',
-    'in_bed': 'under_covers',
-    'in_profile': 'profile',
-    'in_the_name_of_the_moon': 'tsuki_ni_kawatte_oshioki_yo',
-    'incipient_hug': 'imminent_hug',
-    'incipient_kiss': 'imminent_kiss',
-    'incubus': 'demon_boy',
-    'indoor_shoes_(japanese)': 'uwabaki',
-    'infantry': 'soldier',
-    'infinity': 'infinity_symbol',
-    'inflatable_pool': 'wading_pool',
-    'injured': 'injury',
-    'injuries': 'injury',
-    'ink_bottle': 'inkwell',
-    'ink_brush': 'calligraphy_brush',
-    'inner_tube': 'innertube',
-    'innuendo': 'sexually_suggestive',
-    'insane': 'crazy',
-    'insect': 'bug',
-    'insect_arms': 'arthropod_limbs',
-    'insect_boy': 'arthropod_boy',
-    'insect_eyes': 'compound_eyes',
-    'insect_girl': 'arthropod_girl',
-    'insect_legs': 'arthropod_limbs',
-    'insects': 'bug',
-    'insertion': 'object_insertion',
-    'inside_bus': 'bus_interior',
-    'inside_car': 'car_interior',
-    'inside_spacecraft': 'spacecraft_interior',
-    'inside_train': 'train_interior',
-    'instant_loss_2koma': 'instant_loss',
-    'instruments': 'instrument',
-    'intercrural': 'thigh_sex',
-    'intercrural_sex': 'thigh_sex',
-    'interlaced_fingers': 'interlocked_fingers',
-    'interlocked_arms': 'locked_arms',
-    'internal': 'internal_cumshot',
-    'international_miku': 'worldwide_miku',
-    'interrobang': '!?',
-    'intertwined_fingers': 'interlocked_fingers',
-    'intoed': 'pigeon-toed',
-    'inumimi': 'dog_ears',
-    'invisicock': 'invisible_penis',
-    'iron_sign': 'mars_symbol',
-    'iron_symbol': 'mars_symbol',
-    'irritated': 'annoyed',
-    'italian': 'italian_text',
-    'iv': 'intravenous_drip',
-    'iv_drip': 'intravenous_drip',
-    'jabot': 'ascot',
-    'jack-o-lantern': 'jack-o\'-lantern',
-    'jack_o\'_lantern': 'jack-o\'-lantern',
-    'jack_o_lantern': 'jack-o\'-lantern',
-    'jack_plug': 'audio_jack',
-    'jacket_off': 'unworn_jacket',
-    'jacket_over_shoulders': 'jacket_on_shoulders',
-    'jacket_removed': 'unworn_jacket',
-    'jaggy_line': 'jaggy_lines',
-    'jail': 'prison',
-    'jail_cell': 'prison_cell',
-    'jankenpon': 'rock_paper_scissors',
-    'japanese_architecture': 'east_asian_architecture',
-    'japanese_armour': 'japanese_armor',
-    'japanese_clothing': 'japanese_clothes',
-    'japanese_ear_pick': 'mimikaki',
-    'japanese_maid': 'wa_maid',
-    'japanese_sliding_door': 'shouji',
-    'japanese_sweets': 'wagashi',
-    'japanese_teacup': 'yunomi',
-    'japanese_umbrella': 'oil-paper_umbrella',
-    'jealousy': 'jealous',
-    'jean_shorts': 'denim_shorts',
-    'jean_skirt': 'denim_skirt',
-    'jello': 'gelatin',
-    'jester_hat': 'jester_cap',
-    'jet_fighter': 'fighter_jet',
-    'jewel': 'gem',
-    'jewel_case': 'cd_case',
-    'jeweled_pagoda': 'bishamonten\'s_pagoda',
-    'jewelery': 'jewelry',
-    'jewellery': 'jewelry',
-    'jewelry_removed': 'unworn_jewelry',
-    'jewels': 'gem',
-    'jiangshi_pose': 'zombie_pose',
-    'jingle_bells': 'jingle_bell',
-    'jinglebell': 'jingle_bell',
-    'jinglebells': 'jingle_bell',
-    'jinja': 'shrine',
-    'jogging_pants': 'track_pants',
-    'joker_(card)': 'joker_(playing_card)',
-    'joker_card': 'joker_(playing_card)',
-    'jug': 'jug_(bottle)',
-    'juicebox': 'juice_box',
-    'jump': 'jumping',
-    'jump_kick': 'flying_kick',
-    'jumper': 'pinafore_dress',
-    'jumper_skirt': 'suspender_skirt',
-    'kabuto': 'kabuto_(helmet)',
-    'kaijuu': 'kaiju',
-    'kakigoori': 'shaved_ice',
-    'kakigori': 'shaved_ice',
-    'kalashinkov_rifle': 'kalashnikov_rifle',
-    'kamina_glasses': 'kamina_shades',
-    'kamiyama_high_school_uniform': 'kamiyama_high_school_uniform_(hyouka)',
-    'kamiyama_high_school_uniform_(sekai)': 'kamiyama_high_school_uniform_(project_sekai)',
-    'kanabo': 'kanabou',
-    'kanshou_&_bakuya': 'kanshou_&_bakuya_(fate)',
-    'karakasa': 'karakasa_obake',
-    'karakasa-obake': 'karakasa_obake',
-    'kasa-obake': 'karakasa_obake',
-    'kasa_obake': 'karakasa_obake',
-    'katanas': 'katana',
-    'katori_buta': 'kayari_buta',
-    'kda': 'k/da_(league_of_legends)',
-    'keitai': 'cellphone',
-    'kemono': 'furry',
-    'kemonomimi': 'animal_ears',
-    'kevlar_vest': 'bulletproof_vest',
-    'keyboard_(computer)': 'computer_keyboard',
-    'keychain': 'charm_(object)',
-    'keyhole_sweater': 'open-chest_sweater',
-    'keys': 'key',
-    'keystone': 'kaname-ishi',
-    'khakkhara': 'shakujou',
-    'ki': 'aura',
-    'kibougamine_gakuen_school_uniform': 'hope\'s_peak_academy_school_uniform',
-    'kick': 'kicking',
-    'kiddie_pool': 'wading_pool',
-    'kids': 'child',
-    'killer_whale': 'orca',
-    'kimono_sleeve_ties': 'tasuki',
-    'kin-iro_mosaic_high_school_uniform': 'moegi_high_school_uniform',
-    'kindergarten_hat': 'school_hat',
-    'kiriban': 'milestone_celebration',
-    'kiss_on_cheek': 'kissing_cheek',
-    'kiss_on_forehead': 'kissing_forehead',
-    'kissing': 'kiss',
-    'kitsune_mask': 'fox_mask',
-    'kitsunemimi': 'fox_ears',
-    'kittens': 'kitten',
-    'kiwifruit': 'kiwi_(fruit)',
-    'knee': 'knees',
-    'knee_highs': 'kneehighs',
-    'knee_hug': 'hugging_own_legs',
-    'knee_pad': 'knee_pads',
-    'knee_pit': 'kneepits',
-    'knee_socks': 'kneehighs',
-    'kneeboots': 'knee_boots',
-    'kneehigh_boots': 'knee_boots',
-    'kneehigh_socks': 'kneehighs',
-    'kneeling_on_one_leg': 'on_one_knee',
-    'kneepad': 'knee_pads',
-    'kneepads': 'knee_pads',
-    'kneepit': 'kneepits',
-    'knees-on-chest': 'knees_to_chest',
-    'knees_on_chest': 'knees_to_chest',
-    'knees_together': 'legs_together',
-    'knees_together_feet_together': 'legs_together',
-    'knees_touching': 'knees_together_feet_apart',
-    'kneesocks': 'kneehighs',
-    'knife_holster': 'knife_sheath',
-    'knives': 'knife',
-    'kodona': 'ouji_fashion',
-    'koi_(fish)': 'koi',
-    'koi_streamer': 'koinobori',
-    'komorebi': 'dappled_sunlight',
-    'konbini': 'convenience_store',
-    'korean': 'korean_text',
-    'kriss_super_v': 'kriss_vector',
-    'kubisuji': 'nape',
-    'kuma_pantsu': 'bear_panties',
-    'kumapantsu': 'bear_panties',
-    'kumiho': 'kyuubi',
-    'kunoichi': 'ninja',
-    'kyonshii': 'jiangshi',
-    'kyuudo': 'kyuudou',
-    'labcoat': 'lab_coat',
-    'lace-trimmed_blouse': 'lace-trimmed_shirt',
-    'lace-trimmed_kneehighs': 'lace-trimmed_legwear',
-    'lace-trimmed_socks': 'lace-trimmed_legwear',
-    'lace-trimmed_thighhighs': 'lace-trimmed_legwear',
-    'lace_trimmed_bra': 'lace-trimmed_bra',
-    'lace_trimmed_panties': 'lace-trimmed_panties',
-    'lace_trimmed_thighhighs': 'lace-trimmed_legwear',
-    'lace_up_boots': 'lace-up_boots',
-    'laced_boots': 'lace-up_boots',
-    'lactating': 'lactation',
-    'laevatein': 'laevatein_(touhou)',
-    'lamp-post': 'lamppost',
-    'lamp_post': 'lamppost',
-    'lamps': 'lamp',
-    'lance_of_longinus': 'lance_of_longinus_(evangelion)',
-    'lanterns': 'lantern',
-    'lap_cup': 'wakamezake',
-    'lap_sitting': 'sitting_on_lap',
-    'lapcup': 'wakamezake',
-    'lapel': 'lapels',
-    'lapel_flower': 'boutonniere',
-    'lappillow': 'lap_pillow',
-    'large_areola': 'large_areolae',
-    'large_belly': 'big_belly',
-    'large_boobs': 'large_breasts',
-    'large_breast': 'large_breasts',
-    'large_dildo': 'huge_dildo',
-    'large_hips': 'wide_hips',
-    'large_nipples': 'huge_nipples',
-    'large_tits': 'large_breasts',
-    'laser_beam': 'laser',
-    'lasers': 'laser',
-    'laugh': 'laughing',
-    'lavender_hair': 'purple_hair',
-    'lavender_lipstick': 'purple_lips',
-    'lavender_nails': 'purple_nails',
-    'layered_blouse': 'layered_shirt',
-    'layered_clothing': 'layered_clothes',
-    'laying': 'lying',
-    'laying_down': 'lying',
-    'leaf-pattern_stripe': 'leaf_print',
-    'leaf_hair': 'plant_hair',
-    'leaning_on_another': 'leaning_on_person',
-    'leaning_on_rail': 'against_railing',
-    'leaves': 'leaf',
-    'leaves_in_wind': 'falling_leaves',
-    'leek': 'spring_onion',
-    'left-to-right': 'left-to-right_manga',
-    'left_handed': 'left-handed',
-    'left_to_right_manga': 'left-to-right_manga',
-    'leg': 'legs',
-    'leg_band': 'legband',
-    'leg_bracelet': 'anklet',
-    'leg_cling': 'hugging_another\'s_leg',
-    'leg_garter': 'bridal_garter',
-    'leg_guards': 'shin_guards',
-    'leg_hug': 'hugging_own_legs',
-    'leg_outstretched': 'outstretched_leg',
-    'leg_raise': 'leg_lift',
-    'leg_raised': 'leg_lift',
-    'leg_scar': 'scar_on_leg',
-    'leg_slit': 'side_slit',
-    'leg_wraps': 'leg_wrap',
-    'legband': 'thigh_strap',
-    'leghighs': 'socks',
-    'legs_around_waist': 'leg_lock',
-    'legs_crossed': 'crossed_legs',
-    'legs_lock': 'leg_lock',
-    'legs_spread': 'spread_legs',
-    'legwarmers': 'leg_warmers',
-    'legwear_removed': 'unworn_legwear',
-    'legwear_under_shorts': 'pantyhose_under_shorts',
-    'lemons': 'lemon',
-    'lensflare': 'lens_flare',
-    'leopardprint': 'leopard_print',
-    'leotard_sweater': 'ribbed_leotard',
-    'les_paul': 'gibson_les_paul',
-    'lesbian': 'yuri',
-    'letter_boxed': 'letterboxed',
-    'letterbox': 'letterboxed',
-    'letterbox_(object)': 'mailbox_(incoming_mail)',
-    'lick': 'licking',
-    'lick_balls': 'licking_testicle',
-    'licking_cheek': 'licking_another\'s_cheek',
-    'licking_face': 'licking_another\'s_face',
-    'licking_fingers': 'licking_finger',
-    'licking_neck': 'licking_another\'s_neck',
-    'licking_nipples': 'licking_nipple',
-    'licking_testicles': 'licking_testicle',
-    'licks': 'licking',
-    'life_preserver_(ring)': 'lifebuoy',
-    'lifebar': 'health_bar',
-    'lifesaver': 'lifebuoy',
-    'lift_shirt': 'shirt_lift',
-    'lift_skirt': 'skirt_lift',
-    'lifted_by_another': 'lifting_another\'s_clothes',
-    'lifted_by_self': 'lifting_own_clothes',
-    'lifted_skirt': 'skirt_lift',
-    'lifting_another': 'lifting_person',
-    'lifting_skirt': 'skirt_lift',
-    'lifting_weights': 'weightlifting',
-    'light_blue_background': 'blue_background',
-    'light_blue_eyes': 'blue_eyes',
-    'light_blue_lipstick': 'blue_lips',
-    'light_brown_eyes': 'brown_eyes',
-    'light_green_background': 'green_background',
-    'light_purple_eyes': 'purple_eyes',
-    'light_shaft': 'sunbeam',
-    'light_stick': 'glowstick',
-    'light_sword': 'energy_sword',
-    'lightbulb': 'light_bulb',
-    'lightning_bolt': 'lightning_bolt_symbol',
-    'lightning_bolts': 'lightning_bolt_symbol',
-    'lillian_girls\'_academy_uniform': 'lillian_girls\'_academy_school_uniform',
-    'lillies': 'lily_(flower)',
-    'lilypad': 'lily_pad',
-    'lilypads': 'lily_pad',
-    'limp_penis': 'flaccid',
-    'line-up': 'lineup',
-    'line_art': 'lineart',
-    'line_in_eye': 'dashed_eyes',
-    'line_shading': 'linear_hatching',
-    'line_up': 'lineup',
-    'lineless': 'no_lineart',
-    'linked_arms': 'locked_arms',
-    'linked_piercings': 'linked_piercing',
-    'lip_bite': 'biting_own_lip',
-    'lip_biting': 'biting_own_lip',
-    'lip_licking': 'licking_lips',
-    'liquid_between_thighs': 'wakamezake',
-    'little_penis': 'small_penis',
-    'lizard_boy': 'reptile_boy',
-    'lizard_girl': 'reptile_girl',
-    'lock_screen': 'fake_phone_screenshot',
-    'locked_fingers': 'own_hands_clasped',
-    'lockers': 'locker',
-    'loin_cloth': 'loincloth',
-    'lolicon': 'loli',
-    'lolipop': 'lollipop',
-    'lolita': 'lolita_fashion',
-    'lolita_headband': 'lolita_hairband',
-    'lollipops': 'lollipop',
-    'long_ears': 'pointy_ears',
-    'long_gloves': 'elbow_gloves',
-    'long_hair_tied_low': 'low-tied_long_hair',
-    'long_nails_(fingers)': 'long_fingernails',
-    'long_nails_(toes)': 'long_toenails',
-    'long_pants': 'pants',
-    'long_ponytail': 'ponytail',
-    'long_puffy_sleeves': 'puffy_long_sleeves',
-    'long_sleeve': 'long_sleeves',
-    'long_sleeves_under_short_sleeves': 'short_over_long_sleeves',
-    'long_under_short_sleeves': 'short_over_long_sleeves',
-    'longcat': 'longcat_(meme)',
-    'longcoat': 'long_coat',
-    'longhair': 'long_hair',
-    'look_alike': 'look-alike',
-    'lookalike': 'look-alike',
-    'looking_aside': 'looking_to_the_side',
-    'looking_out_window': 'looking_outside',
-    'looking_over_glasses': 'looking_over_eyewear',
-    'looking_over_shoulder': 'looking_back',
-    'looking_over_sunglasses': 'looking_over_eyewear',
-    'looking_through_legs': 'looking_through_own_legs',
-    'looking_to_side': 'looking_to_the_side',
-    'looped_braids': 'braided_hair_rings',
-    'loose_blouse': 'loose_shirt',
-    'loose_tie': 'loose_necktie',
-    'lorry': 'truck',
-    'loudspeaker': 'speaker',
-    'love_umbrella': 'ai_ai_gasa',
-    'loveletter': 'love_letter',
-    'low-leg_panties': 'lowleg_panties',
-    'low_angle': 'from_below',
-    'low_leg_panties': 'lowleg_panties',
-    'low_tied_sidelocks': 'low-tied_sidelocks',
-    'lower_back_wings': 'low_wings',
-    'lower_teeth': 'lower_teeth_only',
-    'lp_record': 'record',
-    'lucky_pervert': 'accidental_pervert',
-    'lunar_new_year': 'chinese_new_year',
-    'lunar_phases': 'moon_phases',
-    'lunch_box': 'lunchbox',
-    'lying_down': 'lying',
-    'lying_on_back': 'on_back',
-    'lying_on_side': 'on_side',
-    'lying_on_stomach': 'on_stomach',
-    'm27_iar': 'h&k_hk416',
-    'm4_sopmod_ii': 'm4_carbine',
-    'm4a1': 'm4_carbine',
-    'macedonian_flag': 'sunburst_background',
-    'machinegun': 'machine_gun',
-    'machines': 'machine',
-    'mad': 'angry',
-    'magatama_earring': 'magatama_earrings',
-    'magazine': 'magazine_(object)',
-    'magazine_(gun)': 'magazine_(weapon)',
-    'magazine_pouch': 'ammunition_pouch',
-    'magazines': 'magazine_(object)',
-    'magenta_hair': 'pink_hair',
-    'magic_circles': 'magic_circle',
-    'magic_girl': 'magical_girl',
-    'magic_lamp': 'oil_lamp',
-    'magic_penis': 'disembodied_penis',
-    'magic_wand': 'wand',
-    'magical_circle': 'magic_circle',
-    'magical_circles': 'magic_circle',
-    'magical_girls': 'magical_girl',
-    'magician_hat': 'top_hat',
-    'magma': 'lava',
-    'magnets': 'magnet',
-    'magnifying_glasses': 'magnifying_glass',
-    'mahjong_tiles': 'mahjong_tile',
-    'mahjongg': 'mahjong',
-    'mahou_shoujo': 'magical_girl',
-    'mahoujin': 'magic_circle',
-    'maid_cachusha': 'maid_headdress',
-    'maid_costume': 'maid',
-    'maid_dress': 'maid',
-    'maid_headband': 'maid_headdress',
-    'maid_outfit': 'maid',
-    'maid_uniform': 'maid',
-    'maids': 'maid',
-    'mail_armor': 'chainmail',
-    'mail_collection_box': 'postbox_(outgoing_mail)',
-    'mailbox': 'mailbox_(incoming_mail)',
-    'main_battle_tank': 'tank',
-    'maize': 'corn',
-    'make-up': 'makeup',
-    'make_up': 'makeup',
-    'male': 'male_focus',
-    'male_cleavage': 'pectoral_cleavage',
-    'male_furry': 'furry_male',
-    'male_gyaru': 'gyaruo',
-    'male_on_futa': 'futa_with_male',
-    'male_on_top': 'boy_on_top',
-    'male_only': 'male_focus',
-    'male_pov': 'pov',
-    'male_sign': 'mars_symbol',
-    'male_symbol': 'mars_symbol',
-    'man': 'male_focus',
-    'manacles': 'shackles',
-    'mandarin': 'mandarin_orange',
-    'maneki_neko': 'maneki-neko',
-    'manga': 'comic',
-    'manga_meat': 'boned_meat',
-    'manjuu': 'baozi',
-    'manko': 'pussy',
-    'mantle': 'capelet',
-    'manual_piano': 'piano',
-    'maple_leaves': 'maple_leaf',
-    'maraca': 'maracas',
-    'markerboard': 'whiteboard',
-    'marketplace': 'market',
-    'marriage': 'wedding',
-    'mars_sign': 'mars_symbol',
-    'martini_glass': 'cocktail_glass',
-    'mascara_smear': 'runny_makeup',
-    'mask_off': 'unworn_mask',
-    'mask_removed': 'unworn_mask',
-    'masker': 'kigurumi',
-    'masks': 'mask',
-    'masturbate': 'masturbation',
-    'masturbating': 'masturbation',
-    'masturbation_(female)': 'female_masturbation',
-    'masturbation_(male)': 'male_masturbation',
-    'masturbation_through_clothing': 'masturbation_through_clothes',
-    'matching_outfit': 'matching_outfits',
-    'mature': 'mature_female',
-    'mature_woman': 'mature_female',
-    'measuring_tape': 'tape_measure',
-    'meat_bun': 'baozi',
-    'meatbun': 'baozi',
-    'mech': 'mecha',
-    'mechamusume': 'mecha_musume',
-    'mechanical_animal': 'robot_animal',
-    'mechanical_arm': 'single_mechanical_arm',
-    'mechanical_hand': 'single_mechanical_hand',
-    'mechanical_organs': 'mechabare',
-    'mechanical_parts': 'mechabare',
-    'medals': 'medal',
-    'medical_kit': 'first_aid_kit',
-    'medical_mask': 'surgical_mask',
-    'medikit': 'first_aid_kit',
-    'medkit': 'first_aid_kit',
-    'medusa': 'snake_hair',
-    'mega_buster': 'arm_cannon',
-    'megane': 'glasses',
-    'meganekko': 'glasses',
-    'meganeko': 'glasses',
-    'melonpan': 'melon_bread',
-    'memory': 'remembering',
-    'men': 'male_focus',
-    'menhera_kei': 'yami_kawaii',
-    'meronpan': 'melon_bread',
-    'merry-go-round': 'carousel',
-    'merry_go_round': 'carousel',
-    'merry_xmas': 'merry_christmas',
-    'messaging': 'text_messaging',
-    'metal_boots': 'armored_boots',
-    'metal_drum': 'drum_(container)',
-    'metallic_skin': 'metal_skin',
-    'meteor_hammer': 'ball_and_chain_(weapon)',
-    'mexican': 'mexico',
-    'mff_threesome': 'ffm_threesome',
-    'mic': 'microphone',
-    'mice': 'mouse_(animal)',
-    'microbikini': 'micro_bikini',
-    'middle_and_ring_fingers_together': '\\||/',
-    'midriff_cutout': 'stomach_cutout',
-    'mikan': 'mandarin_orange',
-    'mikupa': 'miku_day',
-    'milf': 'mature_female',
-    'military_cap': 'military_hat',
-    'military_helmet': 'combat_helmet',
-    'military_insignia': 'insignia',
-    'milk_breasts': 'lactation',
-    'milking': 'lactation',
-    'mimicry': 'imitating',
-    'mini_dress': 'short_dress',
-    'mini_girl': 'minigirl',
-    'mini_hakkero': 'mini-hakkero',
-    'mini_necktie': 'short_necktie',
-    'mini_skirt': 'miniskirt',
-    'mini_tophat': 'mini_top_hat',
-    'minidress': 'short_dress',
-    'minihat': 'mini_hat',
-    'minim': 'half_note',
-    'minishorts': 'short_shorts',
-    'mirrors': 'mirror',
-    'mismatched_nail_polish': 'multicolored_nails',
-    'missile_launcher': 'rocket_launcher',
-    'missing_pussy': 'no_pussy',
-    'missing_teeth': 'missing_tooth',
-    'missing_vagina': 'no_pussy',
-    'missionary_position': 'missionary',
-    'mist': 'fog',
-    'mister_x': 'faceless_male',
-    'mithra': 'mithra_(ff11)',
-    'mitts': 'mittens',
-    'mixed_bathing': 'mixed-sex_bathing',
-    'miyamasuzaka_girls\'_academy_uniform': 'miyamasuzaka_girls\'_academy_school_uniform',
-    'mizugi': 'swimsuit',
-    'mk_18_carbine': 'm4_carbine',
-    'moan': 'moaning',
-    'mobile_phone': 'cellphone',
-    'mochi_mallet': 'kine',
-    'modern_clothing': 'contemporary',
-    'moe_moe_kyun': 'moe_moe_kyun!',
-    'mohican_(hairstyle)': 'mohawk',
-    'mole_on_armpits': 'mole_on_armpit',
-    'molester': 'molestation',
-    'molesting': 'molestation',
-    'molten_rock': 'lava',
-    'money_hold': 'tucked_money',
-    'money_in_cleavage': 'tucked_money',
-    'money_in_clothes': 'tucked_money',
-    'money_tuck': 'tucked_money',
-    'monitor_light': 'screen_light',
-    'monochome': 'monochrome',
-    'monochorme': 'monochrome',
-    'monochromatic': 'monochrome',
-    'monoglove': 'armbinder',
-    'mons_pubis': 'fat_mons',
-    'monster_ball': 'poke_ball',
-    'monstergirl': 'monster_girl',
-    'monsters': 'monster',
-    'morning_hair': 'messy_hair',
-    'mosaic_censor': 'mosaic_censoring',
-    'motorbike': 'motorcycle',
-    'motorboating': 'face_between_breasts',
-    'mound_of_venus': 'groin',
-    'mountains': 'mountain',
-    'mourning_dress': 'funeral_dress',
-    'mourning_photo': 'iei',
-    'mouse': 'mouse_(animal)',
-    'mouse_(computer)': 'computer_mouse',
-    'mouse_pointer': 'cursor',
-    'mouse_trap': 'mousetrap',
-    'moustache': 'mustache',
-    'mouth-to-mouth_feeding': 'shared_food',
-    'mouth_covered': 'covered_mouth',
-    'mouth_full': 'full_mouth',
-    'mouth_open': 'open_mouth',
-    'mouth_scar': 'scar_on_mouth',
-    'mouth_to_mouth_feeding': 'shared_food',
-    'mouthbleed': 'blood_from_mouth',
-    'mp3_player': 'digital_media_player',
-    'mucha_style': 'art_nouveau',
-    'muchi': 'plump',
-    'muffins': 'muffin',
-    'muffler': 'scarf',
-    'mug_shot': 'mugshot',
-    'multi_cock': 'extra_penises',
-    'multi_tail': 'multiple_tails',
-    'multi_tails': 'multiple_tails',
-    'multicolor_hair': 'multicolored_hair',
-    'multicolored_blouse': 'multicolored_shirt',
-    'multicolored_clothing': 'multicolored_clothes',
-    'multicolored_eyelashes': 'colored_eyelashes',
-    'multicolored_fingernails': 'multicolored_nails',
-    'multicolored_nail_polish': 'multicolored_nails',
-    'multicolored_yukata': 'multicolored_kimono',
-    'multilayer_kimono': 'layered_kimono',
-    'multiple_arms': 'extra_arms',
-    'multiple_eyes': 'extra_eyes',
-    'multiple_fellatio': 'cooperative_fellatio',
-    'multiple_handjob': 'cooperative_handjob',
-    'multiple_mouths': 'extra_mouth',
-    'multiple_paizuri': 'cooperative_paizuri',
-    'multiple_pupils': 'extra_pupils',
-    'multiple_tail': 'multiple_tails',
-    'multitail': 'multiple_tails',
-    'multitails': 'multiple_tails',
-    'muscle': 'muscular',
-    'muscles': 'muscular',
-    'muscular_male': 'muscular',
-    'mushrooms': 'mushroom',
-    'music_note': 'musical_note',
-    'music_notes': 'musical_note',
-    'music_sheet': 'sheet_music',
-    'music_sheets': 'sheet_music',
-    'musical_notes': 'musical_note',
-    'musical_sheet': 'sheet_music',
-    'musical_sheets': 'sheet_music',
-    'musical_staff': 'staff_(music)',
-    'mustached_girl': 'fake_mustache',
-    'muted_colors': 'muted_color',
-    'naga': 'lamia',
-    'naga-ette': 'lamia',
-    'nail': 'nail_(hardware)',
-    'nail_varnish': 'nail_polish',
-    'nailbat': 'nail_bat',
-    'nailpolish': 'nail_polish',
-    'nakadashi': 'cum_in_pussy',
-    'naked': 'nude',
-    'naked_boots': 'boots',
-    'naked_fur_coat': 'naked_coat',
-    'naked_gakuran': 'naked_jacket',
-    'naked_jacket': 'naked_coat',
-    'naked_randoseru': 'randoseru',
-    'naked_shrug': 'shrug_(clothing)',
-    'naked_sleeves': 'detached_sleeves',
-    'naked_socks': 'socks',
-    'naked_thighhighs': 'thighhighs',
-    'naked_track_jacket': 'naked_jacket',
-    'nakedapron': 'naked_apron',
-    'nakedribbon': 'naked_ribbon',
-    'nameless_dagger': 'nameless_dagger_(fate)',
-    'namesake': 'name_connection',
-    'nametag': 'name_tag',
-    'naranja_academy_uniform': 'naranja_academy_school_uniform',
-    'naruto_(food)': 'narutomaki',
-    'narwhal_tail': 'cetacean_tail',
-    'naturism': 'nudist',
-    'naughty_smile': 'naughty_face',
-    'navel_ring': 'navel_piercing',
-    'nds': 'nintendo_ds',
-    'nearly_nude_apron': 'nearly_naked_apron',
-    'neck_belt': 'belt_collar',
-    'neck_bite': 'biting_neck',
-    'neck_biting': 'biting_neck',
-    'neck_bow': 'bowtie',
-    'neck_hug': 'arms_around_neck',
-    'neck_kiss': 'kissing_neck',
-    'neck_scar': 'scar_on_neck',
-    'neck_stitches': 'stitched_neck',
-    'neck_tie': 'necktie',
-    'neckbell': 'neck_bell',
-    'necklace_removed': 'unworn_necklace',
-    'necktie_clip': 'tie_clip',
-    'necktie_off': 'unworn_necktie',
-    'necktie_pin': 'tie_clip',
-    'necktie_pull': 'necktie_grab',
-    'necktie_removed': 'unworn_necktie',
-    'need_to_pee': 'have_to_pee',
-    'needles': 'needle',
-    'negi': 'spring_onion',
-    'neko': 'cat',
-    'nekomimi': 'cat_ears',
-    'neutral_expression': 'expressionless',
-    'new_years': 'new_year',
-    'newhalf': 'futa_without_pussy',
-    'newhalf_masturbation': 'futanari_masturbation',
-    'newyear': 'new_year',
-    'nezumimi': 'mouse_ears',
-    'nfcm': 'clothed_male_nude_female',
-    'night_dress': 'nightgown',
-    'night_gown': 'nightgown',
-    'night_table': 'nightstand',
-    'night_vision_goggles': 'night_vision_device',
-    'nightdress': 'nightgown',
-    'nightie': 'nightgown',
-    'nightstick': 'baton_(weapon)',
-    'nightwear': 'sleepwear',
-    'nighty': 'nightgown',
-    'nihawngo': 'ranguage',
-    'nijigasaki_academy_school_uniform': 'nijigasaki_school_uniform',
-    'nijigasaki_academy_uniform': 'nijigasaki_school_uniform',
-    'nike': 'nike_(company)',
-    'nikuman': 'baozi',
-    'nine-tailed_fox': 'kyuubi',
-    'ninja_hand_gesture': 'kuji-in',
-    'ninja_star': 'shuriken',
-    'nip_slip': 'nipple_slip',
-    'nipple': 'nipples',
-    'nipple_censor': 'censored_nipples',
-    'nipple_fuck': 'nipple_penetration',
-    'nipple_lick': 'licking_nipple',
-    'nipple_licking': 'licking_nipple',
-    'nipple_piercings': 'nipple_piercing',
-    'nipple_pinch': 'nipple_tweak',
-    'nipple_ring': 'nipple_rings',
-    'nipple_suck': 'breast_sucking',
-    'nipple_sucking': 'breast_sucking',
-    'nipple_to_nipple': 'nipple-to-nipple',
-    'nipple_vibrator': 'vibrator_on_nipple',
-    'nippleless': 'no_nipples',
-    'nippleless_bra': 'cupless_bra',
-    'nippleless_clothing': 'nippleless_clothes',
-    'nippleslip': 'nipple_slip',
-    'nipslip': 'nipple_slip',
-    'nissin_cup_noodles': 'nissin_cup_noodle',
-    'nmcf': 'clothed_female_nude_male',
-    'no_ass': 'flat_ass',
-    'no_bandana': 'no_headwear',
-    'no_blouse': 'no_shirt',
-    'no_face': 'faceless',
-    'no_glasses': 'no_eyewear',
-    'no_hat': 'no_headwear',
-    'no_helmet': 'no_headwear',
-    'no_human': 'no_humans',
-    'no_line-art': 'no_lineart',
-    'no_sign': 'no_symbol',
-    'no_skirt': 'no_pants',
-    'no_sleeves': 'sleeveless',
-    'no_vagina': 'no_pussy',
-    'noblewoman\'s_laugh': 'ojou-sama_pose',
-    'nodachi': 'ootachi',
-    'noise_(crt)': 'static',
-    'noise_(visual)': 'film_grain',
-    'noodle': 'noodles',
-    'nopan': 'no_panties',
-    'northern_lights': 'aurora',
-    'nose-to-nose': 'noses_touching',
-    'nose_bleed': 'nosebleed',
-    'nose_drip': 'runny_nose',
-    'nose_hatchet': 'hashitsuki_nata',
-    'nose_scar': 'scar_on_nose',
-    'nose_to_nose': 'noses_touching',
-    'nose_touching': 'noses_touching',
-    'nosedrip': 'runny_nose',
-    'nostril': 'nostrils',
-    'novagina': 'no_pussy',
-    'ntr': 'netorare',
-    'nuclear': 'radiation_symbol',
-    'nuclear_symbol': 'radiation_symbol',
-    'nude_apron': 'naked_apron',
-    'nude_bandage': 'naked_bandage',
-    'nude_cape': 'naked_cape',
-    'nude_chocolate': 'naked_chocolate',
-    'nude_coat': 'naked_coat',
-    'nude_female_clothed_female': 'clothed_female_nude_female',
-    'nude_female_clothed_male': 'clothed_male_nude_female',
-    'nude_hoodie': 'naked_hoodie',
-    'nude_male_clothed_female': 'clothed_female_nude_male',
-    'nude_male_clothed_male': 'clothed_male_nude_male',
-    'nude_overalls': 'naked_overalls',
-    'nude_ribbon': 'naked_ribbon',
-    'nude_scarf': 'naked_scarf',
-    'nude_sheet': 'naked_sheet',
-    'nude_shirt': 'naked_shirt',
-    'nude_tabard': 'naked_tabard',
-    'nude_thighhighs': 'thighhighs',
-    'nude_towel': 'naked_towel',
-    'nudism': 'nudist',
-    'nuigurumi': 'stuffed_animal',
-    'nunchuks': 'nunchaku',
-    'nurse\'s_office': 'infirmary',
-    'nurse_hat': 'nurse_cap',
-    'nurse_office': 'infirmary',
-    'nurse_outfit': 'nurse',
-    'nurse_uniform': 'nurse',
-    'nuzzling': 'nuzzle',
-    'nyoibo': 'ruyi_jingu_bang',
-    'o-ring_bikini_top': 'o-ring_top',
-    'o.o': 'o_o',
-    'o_<': '>_o',
-    'o_ring': 'o-ring',
-    'o_ring_bikini': 'o-ring_bikini',
-    'o_ring_bottom': 'o-ring_bottom',
-    'o_ring_top': 'o-ring_top',
-    'obento': 'bento',
-    'obentou': 'bento',
-    'object_behind_back': 'holding_behind_back',
-    'object_hug': 'hugging_object',
-    'object_manipulation': 'telekinesis',
-    'oblivious': 'clueless',
-    'octopus_balls': 'takoyaki',
-    'octopus_eyes': 'cephalopod_eyes',
-    'octopus_girl': 'scylla',
-    'octopus_wiener': 'tako-san_wiener',
-    'odango': 'double_bun',
-    'odd_eye': 'heterochromia',
-    'off-shoulder': 'off_shoulder',
-    'off-shoulder_swimsuit': 'off-shoulder_one-piece_swimsuit',
-    'off_shoulders': 'off_shoulder',
-    'office_man': 'salaryman',
-    'officelady': 'office_lady',
-    'official_alternate_outfit': 'official_alternate_costume',
-    'official_jersey': 'jersey',
-    'ofuro': 'bath',
-    'ohanami': 'hanami',
-    'oil_barrel': 'drum_(container)',
-    'oil_drum': 'drum_(container)',
-    'ok': 'ok_sign',
-    'okappa': 'bob_cut',
-    'ol': 'office_lady',
-    'old_television': 'crt',
-    'older': 'aged_up',
-    'older_on_younger': 'age_difference',
-    'oldschool': 'retro_artstyle',
-    'omelette': 'omelet',
-    'on_all_fours': 'all_fours',
-    'on_another': 'on_person',
-    'on_belly': 'on_stomach',
-    'on_fire': 'burning',
-    'on_front': 'on_stomach',
-    'on_knees': 'kneeling',
-    'on_one_foot': 'standing_on_one_leg',
-    'on_one_leg': 'standing_on_one_leg',
-    'on_phone': 'talking_on_phone',
-    'on_sofa': 'on_couch',
-    'onahole': 'artificial_vagina',
-    'onani': 'masturbation',
-    'one-piece': 'one-piece_swimsuit',
-    'one-piece_swimsuit_down': 'one-piece_swimsuit_pull',
-    'one_arm_up': 'arm_up',
-    'one_earring': 'single_earring',
-    'one_elbow_glove': 'single_elbow_glove',
-    'one_eye': 'one-eyed',
-    'one_eyed': 'one-eyed',
-    'one_glove': 'single_glove',
-    'one_hand_raised': 'hand_up',
-    'one_knee': 'on_one_knee',
-    'one_kneehigh': 'single_kneehigh',
-    'one_leg_raised': 'leg_up',
-    'one_pantsleg': 'single_pantsleg',
-    'one_piece_swimsuit': 'one-piece_swimsuit',
-    'one_shoe': 'single_shoe',
-    'one_sleeve': 'single_sleeve',
-    'one_sock': 'single_sock',
-    'one_thighhigh': 'single_thighhigh',
-    'one_wing': 'single_wing',
-    'oneshota': 'onee-shota',
-    'onomatopoeia': 'sound_effects',
-    'oodachi': 'ootachi',
-    'ookamimimi': 'wolf_ears',
-    'oota_jun\'ya_(style)': 'zun_(style)',
-    'open-back_dress': 'backless_dress',
-    'open_\\m/': '\\||/',
-    'open_back': 'backless_outfit',
-    'open_back_dress': 'backless_dress',
-    'open_blazer': 'open_jacket',
-    'open_blouse': 'open_shirt',
-    'open_clothing': 'open_clothes',
-    'open_legs': 'spread_legs',
-    'open_pussy': 'spread_pussy',
-    'open_sweater': 'open_cardigan',
-    'open_toe_shoes': 'toeless_footwear',
-    'open_track_jacket': 'open_jacket',
-    'open_yukata': 'open_kimono',
-    'openshirt': 'open_shirt',
-    'opera_gloves': 'elbow_gloves',
-    'operator': 'military_operator',
-    'oppai': 'breasts',
-    'oppai_day': 'breasts_day',
-    'oral_cumshot': 'cum_in_mouth',
-    'oral_object_insertion': 'simulated_fellatio',
-    'orange': 'orange_(fruit)',
-    'orange_(food)': 'orange_(fruit)',
-    'orange_bikini_bottom': 'orange_bikini',
-    'orange_bikini_top': 'orange_bikini',
-    'orange_blouse': 'orange_shirt',
-    'orange_boots': 'orange_footwear',
-    'orange_eyelashes': 'colored_eyelashes',
-    'orange_eyepatch': 'colored_eyepatch',
-    'orange_fingernails': 'orange_nails',
-    'orange_kneehighs': 'orange_socks',
-    'orange_pillow': 'pillow',
-    'orange_shoes': 'orange_footwear',
-    'orange_yukata': 'orange_kimono',
-    'oranges': 'orange_(fruit)',
-    'orbit': 'in_orbit',
-    'orbs': 'orb',
-    'orc_female': 'female_orc',
-    'orca_tail': 'cetacean_tail',
-    'orca_whale': 'orca',
-    'ore_lesion_(arknights)': 'oripathy_lesion_(arknights)',
-    'organization_xiii_uniform': 'black_coat_(kingdom_hearts)',
-    'oriental_hatchet': 'nata_(tool)',
-    'oriental_umbrella': 'oil-paper_umbrella',
-    'origami_crane': 'paper_crane',
-    'oripathy_monitor_(arknights)': 'infection_monitor_(arknights)',
-    'ork': 'orc',
-    'orz': 'prostration',
-    'oshikko': 'peeing',
-    'oshiri': 'ass',
-    'otm_gag': 'cloth_gag',
-    'otokonoko': 'otoko_no_ko',
-    'ouch': 'pain',
-    'ouji_(fashion)': 'ouji_fashion',
-    'out_of_border': 'outside_border',
-    'out_of_frame_censoring': 'out-of-frame_censoring',
-    'outdoor': 'outdoors',
-    'outer_space': 'space',
-    'outfit_switch': 'costume_switch',
-    'outlined': 'outline',
-    'outlines': 'outline',
-    'outside': 'outdoors',
-    'outside_of_border': 'outside_border',
-    'outstretched_hands': 'outstretched_hand',
-    'oven_mitt': 'oven_mitts',
-    'oven_mittens': 'oven_mitts',
-    'over-rim_glasses': 'over-rim_eyewear',
-    'over_rim_glasses': 'over-rim_eyewear',
-    'overboob': 'cleavage',
-    'overflow': 'cum_overflow',
-    'oversized_clothing': 'oversized_clothes',
-    'oversized_weapon': 'huge_weapon',
-    'overweight': 'fat',
-    'oviposition': 'egg_laying',
-    'ox': 'bull',
-    'oxen': 'bull',
-    'pail': 'bucket',
-    'paint_brush': 'paintbrush',
-    'paint_bucket': 'paint_can',
-    'paint_clothes': 'painted_clothes',
-    'paint_on_face': 'paint_splatter_on_face',
-    'painted_nails': 'nail_polish',
-    'painting': 'painting_(action)',
-    'painting_frame': 'picture_frame',
-    'paisura': 'strap_between_breasts',
-    'pajama': 'pajamas',
-    'pale': 'pale_skin',
-    'pale_colors': 'pale_color',
-    'pale_face': 'turn_pale',
-    'paleskin': 'pale_skin',
-    'palette': 'palette_(object)',
-    'palette_(guide)': 'color_guide',
-    'palm_trees': 'palm_tree',
-    'pancakes': 'pancake',
-    'panchira': 'pantyshot',
-    'panic': 'panicking',
-    'pantie': 'panties',
-    'panties_around_leg': 'panties_around_one_leg',
-    'panties_behind_pantyhose': 'panties_under_pantyhose',
-    'panties_below_pantyhose': 'panties_under_pantyhose',
-    'panties_down': 'panty_pull',
-    'panties_off': 'unworn_panties',
-    'panties_pull': 'panty_pull',
-    'panties_removed': 'unworn_panties',
-    'panties_under_pantiehose': 'panties_under_pantyhose',
-    'panties_underneath_pantyhose': 'panties_under_pantyhose',
-    'panting': 'heavy_breathing',
-    'pantless': 'no_pants',
-    'pants_down': 'pants_pull',
-    'pants_in_boots': 'pants_tucked_in',
-    'pants_removed': 'unworn_pants',
-    'pants_suit': 'pant_suit',
-    'pantsless': 'no_pants',
-    'pantsu': 'panties',
-    'pantsu_pull': 'panty_pull',
-    'pantsuit': 'pant_suit',
-    'pantsupull': 'panty_pull',
-    'panty': 'panties',
-    'panty_aside': 'panties_aside',
-    'panty_bow': 'bow_panties',
-    'panty_down': 'panty_pull',
-    'panty_flash': 'pantyshot',
-    'panty_hose': 'pantyhose',
-    'panty_shot': 'pantyshot',
-    'pantyhose_down': 'pantyhose_pull',
-    'pantyhosepull': 'pantyhose_pull',
-    'pantypull': 'panty_pull',
-    'panzer_vi_tiger_i': 'tiger_i',
-    'panzerkampfwagen_iv': 'panzer_iv',
-    'paper_clip': 'paperclip',
-    'paper_cup': 'disposable_cup',
-    'paper_ghost': 'shikigami',
-    'paper_money': 'banknote',
-    'paper_plane': 'paper_airplane',
-    'paper_talisman': 'ofuda',
-    'paper_umbrella': 'oil-paper_umbrella',
-    'paper_windmill': 'pinwheel',
-    'pareo': 'sarong',
-    'partially_monochrome': 'partially_colored',
-    'partially_visible_anus': 'anus_peek',
-    'partially_visible_vulva': 'pussy_peek',
-    'partly_fingerless_gloves': 'partially_fingerless_gloves',
-    'party_hats': 'party_hat',
-    'patches': 'patch',
-    'pattern': 'patterned',
-    'patting_head': 'headpat',
-    'pauldron': 'pauldrons',
-    'paw': 'animal_hands',
-    'paw_background': 'paw_print_background',
-    'paw_boots': 'paw_shoes',
-    'paw_prints': 'paw_print',
-    'pawn': 'pawn_(chess)',
-    'pawprint': 'paw_print',
-    'pawprints': 'paw_print',
-    'paws': 'animal_hands',
-    'payot': 'sidelocks',
-    'peace_sign': 'v',
-    'peaches': 'peach',
-    'pecs': 'pectorals',
-    'pectoral_to_pectoral': 'pectoral_docking',
-    'pectorals_out_of_clothes': 'bare_pectorals',
-    'pedestrian_crossing': 'crosswalk',
-    'peeing_panties': 'peeing_self',
-    'peeing_pants': 'peeing_self',
-    'peek': 'peeking',
-    'peeking_around_corner': 'peeking_out',
-    'peeping': 'peeking',
-    'pelvic_bone': 'hip_bones',
-    'pelvic_bones': 'hip_bones',
-    'penetration_from_behind': 'sex_from_behind',
-    'penguin_suit': 'penguin_costume',
-    'penguins': 'penguin',
-    'penis_kiss': 'kissing_penis',
-    'penis_licking': 'licking_penis',
-    'penis_outside': 'penis_out',
-    'penis_ring': 'cock_ring',
-    'penis_tentacles': 'penis_tentacle',
-    'penis_to_nipple': 'penis_to_breast',
-    'penis_touching': 'penises_touching',
-    'penis_tucking': 'tucked_penis',
-    'penis_under_clothes': 'penis_under_another\'s_clothes',
-    'pepero': 'pocky',
-    'pepero_day': 'pocky_day',
-    'perky_nipples': 'covered_nipples',
-    'person_carrying': 'carrying_person',
-    'person_in_a_container': 'in_container',
-    'personal_alarm': 'crime_prevention_buzzer',
-    'personality_swap': 'personality_switch',
-    'pet_collar': 'animal_collar',
-    'petal': 'petals',
-    'petals_in_wind': 'falling_petals',
-    'petals_on_water': 'petals_on_liquid',
-    'petboy': 'pet_play',
-    'pettanko': 'flat_chest',
-    'petting': 'headpat',
-    'phallic_object': 'phallic_symbol',
-    'phone_charm': 'cellphone_charm',
-    'phone_screen': 'fake_phone_screenshot',
-    'phonebooth': 'phone_booth',
-    'photo_frame': 'picture_frame',
-    'photograph_(object)': 'photo_(object)',
-    'pick-ax': 'pickaxe',
-    'pick-axe': 'pickaxe',
-    'pick_axe': 'pickaxe',
-    'pickax': 'pickaxe',
-    'picture': 'photo_(object)',
-    'picture_(object)': 'drawing_(object)',
-    'pictures': 'photo_(object)',
-    'pien': 'pleading_face_emoji',
-    'pierced': 'piercing',
-    'pierced_ear': 'ear_piercing',
-    'pierced_ears': 'ear_piercing',
-    'pierced_nipples': 'nipple_piercing',
-    'piercings': 'piercing',
-    'pigeon_toed': 'pigeon-toed',
-    'pigeon_toes': 'pigeon-toed',
-    'piglet': 'pig',
-    'pigs': 'pig',
-    'pigtails': 'short_twintails',
-    'pillarbox': 'pillarboxed',
-    'pillars': 'pillar',
-    'pillow_hat': 'mob_cap',
-    'pillowhat': 'mob_cap',
-    'pillows': 'pillow',
-    'pills': 'pill',
-    'pilotka': 'garrison_cap',
-    'pin-back_button': 'button_badge',
-    'pin_button': 'button_badge',
-    'pinback_button': 'button_badge',
-    'pince_nez': 'pince-nez',
-    'pinch': 'pinching',
-    'pinching_cheek': 'cheek_pinching',
-    'pinching_cheeks': 'cheek_pinching',
-    'ping-pong_paddle': 'table_tennis_paddle',
-    'ping-pong_racket': 'table_tennis_paddle',
-    'ping_pong_paddle': 'table_tennis_paddle',
-    'ping_pong_racket': 'table_tennis_paddle',
-    'pink-framed_glasses': 'pink-framed_eyewear',
-    'pink_backpack': 'pink_bag',
-    'pink_bikini_bottom': 'pink_bikini',
-    'pink_bikini_top': 'pink_bikini',
-    'pink_blouse': 'pink_shirt',
-    'pink_boots': 'pink_footwear',
-    'pink_diamond_765': 'pink_diamond_765_(idolmaster)',
-    'pink_earrings': 'earrings',
-    'pink_eyelashes': 'colored_eyelashes',
-    'pink_eyepatch': 'colored_eyepatch',
-    'pink_fingernails': 'pink_nails',
-    'pink_flame': 'pink_fire',
-    'pink_handbag': 'pink_bag',
-    'pink_jabot': 'pink_ascot',
-    'pink_kneehighs': 'pink_socks',
-    'pink_lipstick': 'pink_lips',
-    'pink_obi': 'pink_sash',
-    'pink_pillow': 'pillow',
-    'pink_shoes': 'pink_footwear',
-    'pink_swimsuit': 'pink_one-piece_swimsuit',
-    'pink_yukata': 'pink_kimono',
-    'pinkhair': 'pink_hair',
-    'pinky_promise': 'pinky_swear',
-    'pins': 'pin',
-    'pinstripe': 'pinstripe_pattern',
-    'pinstripes': 'pinstripe_pattern',
-    'pipe': 'smoking_pipe',
-    'pipe_(industrial)': 'industrial_pipe',
-    'pipe_(plumbing)': 'industrial_pipe',
-    'pipe_(smoking)': 'smoking_pipe',
-    'pipes': 'industrial_pipe',
-    'piping_bag': 'pastry_bag',
-    'pirate_flag': 'jolly_roger',
-    'pirates': 'pirate',
-    'pistol': 'handgun',
-    'pitcher': 'pitcher_(container)',
-    'pixel_censor': 'mosaic_censoring',
-    'pixie': 'fairy',
-    'plaid_bikini_bottom': 'plaid_bikini',
-    'plaid_bikini_top': 'plaid_bikini',
-    'plaid_blouse': 'plaid_shirt',
-    'plaid_clothing': 'plaid_clothes',
-    'plamo': 'model_kit',
-    'plane': 'airplane',
-    'planes': 'airplane',
-    'planets': 'planet',
-    'plant_pot': 'flower_pot',
-    'planted_weapon': 'planted',
-    'plantgirl': 'plant_girl',
-    'plants': 'plant',
-    'plastic_cup': 'disposable_cup',
-    'plate_carrier': 'bulletproof_vest',
-    'plates': 'plate',
-    'platform_shoes': 'platform_footwear',
-    'platforms': 'platform_footwear',
-    'platter': 'tray',
-    'playboy_bunny_(male)': 'male_playboy_bunny',
-    'playboy_bunny_leotard': 'playboy_bunny',
-    'playing_cards': 'playing_card',
-    'playing_game': 'playing_games',
-    'playing_video_games': 'playing_games',
-    'plug_suit': 'plugsuit',
-    'plugsuits': 'plugsuit',
-    'plum_blossom': 'plum_blossoms',
-    'plush': 'stuffed_toy',
-    'plush_hug': 'hugging_doll',
-    'plush_toy': 'stuffed_toy',
-    'plushie': 'stuffed_animal',
-    'plushies': 'stuffed_animal',
-    'plushy': 'stuffed_animal',
-    'pocket_pussy': 'artificial_vagina',
-    'pockets': 'pocket',
-    'pockets_visible': 'exposed_pocket',
-    'pocketwatch': 'pocket_watch',
-    'pocky_game': 'pocky_kiss',
-    'pointe_shoes': 'ballet_slippers',
-    'pointed_ears': 'pointy_ears',
-    'pointed_teeth': 'sharp_teeth',
-    'pointing_bow_(weapon)': 'aiming',
-    'pointing_crossbow': 'aiming',
-    'pointing_gun': 'aiming',
-    'pointing_skyward': 'pointing_up',
-    'pointing_to_the_sky': 'pointing_up',
-    'pointing_weapon': 'pointing_melee_weapon',
-    'pointless_censorship': 'pointless_censoring',
-    'pointless_headphones': 'implied_extra_ears',
-    'pointy-ears': 'pointy_ears',
-    'pointy_boots': 'pointy_footwear',
-    'pointy_ear': 'pointy_ears',
-    'pointy_fingernails': 'sharp_fingernails',
-    'pointy_shoes': 'pointy_footwear',
-    'pointy_teeth': 'sharp_teeth',
-    'pointy_toenails': 'sharp_toenails',
-    'poke': 'poking',
-    'poke_ball_(generic)': 'poke_ball_(basic)',
-    'poke_balls': 'poke_ball',
-    'pokeball': 'poke_ball',
-    'pokeballs': 'poke_ball',
-    'pokemon_ears': 'animal_ears',
-    'pokemon_number': 'pokedex_number',
-    'poker_chips': 'poker_chip',
-    'poking_cheek': 'cheek_poking',
-    'poking_cheeks': 'cheek_poking',
-    'polaroid': 'polaroid_photo',
-    'pole_axe': 'halberd',
-    'poleaxe': 'halberd',
-    'police-man': 'policeman',
-    'police-woman': 'policewoman',
-    'police_baton': 'baton_(weapon)',
-    'police_man': 'policeman',
-    'police_officer': 'police',
-    'police_tape': 'caution_tape',
-    'police_woman': 'policewoman',
-    'polka-dot': 'polka_dot',
-    'polka-dot_background': 'polka_dot_background',
-    'polka-dot_bikini': 'polka_dot_bikini',
-    'polka-dot_bra': 'polka_dot_bra',
-    'polka-dot_dress': 'polka_dot_dress',
-    'polka-dot_legwear': 'polka_dot_legwear',
-    'polka-dot_panties': 'polka_dot_panties',
-    'polka-dot_swimsuit': 'polka_dot_swimsuit',
-    'polka_dot_blouse': 'polka_dot_shirt',
-    'polka_dot_hat': 'polka_dot_headwear',
-    'polka_dots': 'polka_dot',
-    'pollaxe': 'halberd',
-    'polygon': '3d',
-    'polygonal': 'low_poly',
-    'polymelia': 'extra_arms',
-    'pom-pom': 'pom_pom_(cheerleading)',
-    'pom-poms': 'pom_pom_(cheerleading)',
-    'pom-pon': 'pom_pom_(cheerleading)',
-    'pom-pons': 'pom_pom_(cheerleading)',
-    'pom_pom_(clothing)': 'pom_pom_(clothes)',
-    'pom_poms': 'pom_pom_(cheerleading)',
-    'pompom': 'pom_pom_(cheerleading)',
-    'pompoms': 'pom_pom_(cheerleading)',
-    'pompon': 'pom_pom_(cheerleading)',
-    'pompons': 'pom_pom_(cheerleading)',
-    'pony': 'pony_(animal)',
-    'pony_girl': 'horse_girl',
-    'pony_tail': 'ponytail',
-    'pool_ball': 'billiard_ball',
-    'pool_cue': 'cue_stick',
-    'pop-up_window': 'window_(computing)',
-    'pop_can': 'soda_can',
-    'popped_buttons': 'popped_button',
-    'pork_bun': 'baozi',
-    'porkbun': 'baozi',
-    'post-apocalyptic': 'post-apocalypse',
-    'post-it': 'sticky_note',
-    'postbox': 'postbox_(outgoing_mail)',
-    'posterior_cleavage': 'butt_crack',
-    'pot_(cooking)': 'cooking_pot',
-    'pot_(plant)': 'flower_pot',
-    'potato_chip': 'potato_chips',
-    'potatoes': 'potato',
-    'potstickers': 'jiaozi',
-    'potted_plants': 'potted_plant',
-    'pouches': 'pouch',
-    'pouting': 'pout',
-    'pov_aiming': 'aiming_at_viewer',
-    'pov_ass': 'ass_focus',
-    'pov_eye_contact': 'looking_at_viewer',
-    'pov_feet': 'foot_focus',
-    'pov_leash': 'viewer_holding_leash',
-    'pov_leashed': 'viewer_on_leash',
-    'pov_pointing': 'pointing_at_viewer',
-    'power_armour': 'power_armor',
-    'power_line': 'power_lines',
-    'power_outlet': 'electrical_outlet',
-    'power_pole': 'utility_pole',
-    'power_pole_(dragon_ball)': 'ruyi_jingu_bang',
-    'power_socket': 'electrical_outlet',
-    'power_star_(mario)': 'super_star_(mario)',
-    'powered_armor': 'power_armor',
-    'powered_armour': 'power_armor',
-    'powersuit': 'power_suit',
-    'prawn': 'shrimp',
-    'pray': 'praying',
-    'precious_stone': 'gem',
-    'precious_stones': 'gem',
-    'precum_trail': 'precum_string',
-    'preschool': 'kindergarten',
-    'present': 'gift',
-    'presenting_panties': 'presenting_removed_panties',
-    'presents': 'gift',
-    'priest_staff_(buddhist)': 'shakujou',
-    'princess_cut': 'hime_cut',
-    'print_blouse': 'print_shirt',
-    'print_hair': 'patterned_hair',
-    'print_hat': 'print_headwear',
-    'print_yukata': 'print_kimono',
-    'prison_photo': 'mugshot',
-    'prison_uniform': 'prison_clothes',
-    'prisoner_uniform': 'prison_clothes',
-    'profiterole': 'cream_puff',
-    'prone': 'on_stomach',
-    'proposal': 'marriage_proposal',
-    'prostate_massage': 'prostate_milking',
-    'prosthetic_limb': 'prosthesis',
-    'prostitute': 'prostitution',
-    'protect': 'protecting',
-    'prototype': 'prototype_design',
-    'psp': 'playstation_portable',
-    'pub': 'bar_(place)',
-    'pubes': 'pubic_hair',
-    'pubic_hair_(female)': 'female_pubic_hair',
-    'pubic_hair_(male)': 'male_pubic_hair',
-    'pubichair': 'pubic_hair',
-    'public': 'public_indecency',
-    'public_bath': 'bathhouse',
-    'public_sex': 'public_indecency',
-    'puddle_of_blood': 'pool_of_blood',
-    'puffed_cheeks': 'puffy_cheeks',
-    'puffer_jacket': 'down_jacket',
-    'puffing_cheek': 'puffy_cheeks',
-    'puffy_anus': 'puckered_anus',
-    'puffy_areolae': 'puffy_nipples',
-    'puffy_nipple': 'puffy_nipples',
-    'puffy_shoulder_long_sleeves': 'juliet_sleeves',
-    'puffy_shoulders': 'puffy_sleeves',
-    'puffy_shoulders_long_sleeves': 'juliet_sleeves',
-    'puffy_skirt': 'bubble_skirt',
-    'puke': 'vomit',
-    'puking': 'vomiting',
-    'pulled_by_another': 'pulling_another\'s_clothes',
-    'pulled_by_self': 'pulling_own_clothes',
-    'pulling_another\'s_hair': 'grabbing_another\'s_hair',
-    'pump_shotgun': 'pump_action',
-    'pumpkin_basket': 'halloween_bucket',
-    'pumpkin_bucket': 'halloween_bucket',
-    'pumpkins': 'pumpkin',
-    'punch': 'punching',
-    'punch_to_face': 'face_punch',
-    'punching_at_viewer': 'incoming_punch',
-    'puppet_string': 'puppet_strings',
-    'puppets': 'puppet',
-    'purple-framed_glasses': 'purple-framed_eyewear',
-    'purple-hair': 'purple_hair',
-    'purple_backpack': 'purple_bag',
-    'purple_bikini_bottom': 'purple_bikini',
-    'purple_bikini_top': 'purple_bikini',
-    'purple_blouse': 'purple_shirt',
-    'purple_boots': 'purple_footwear',
-    'purple_earrings': 'earrings',
-    'purple_eyelashes': 'colored_eyelashes',
-    'purple_eyepatch': 'colored_eyepatch',
-    'purple_fingernails': 'purple_nails',
-    'purple_flame': 'purple_fire',
-    'purple_handbag': 'purple_bag',
-    'purple_jabot': 'purple_ascot',
-    'purple_kneehighs': 'purple_socks',
-    'purple_lipstick': 'purple_lips',
-    'purple_obi': 'purple_sash',
-    'purple_pillow': 'pillow',
-    'purple_shoes': 'purple_footwear',
-    'purple_swimsuit': 'purple_one-piece_swimsuit',
-    'purple_yukata': 'purple_kimono',
-    'purpleeyes': 'purple_eyes',
-    'purplehair': 'purple_hair',
-    'purse': 'handbag',
-    'push': 'pushing',
-    'pussy_juice_drip': 'pussy_juice',
-    'pussy_juice_string': 'pussy_juice_trail',
-    'pussy_lick': 'cunnilingus',
-    'pussy_spread': 'spread_pussy',
-    'pussy_veil': 'pelvic_curtain',
-    'pussyjuice': 'pussy_juice',
-    'putting_on_makeup': 'applying_makeup',
-    'pyjama': 'pajamas',
-    'pyjamas': 'pajamas',
-    'pylon_(traffic)': 'traffic_cone',
-    'pyramid': 'pyramid_(structure)',
-    'pyromancy': 'pyrokinesis',
-    'pzkpfw_iv': 'panzer_iv',
-    'pzkpfw_vi_tiger_i': 'tiger_i',
-    'qing_guanmao': 'qingdai_guanmao',
-    'qipao': 'china_dress',
-    'quadruple_persona': 'multiple_persona',
-    'quaver': 'eighth_note',
-    'question_mark': '?',
-    'quick_release_buckle': 'snap-fit_buckle',
-    'quintuple_persona': 'multiple_persona',
-    'rabbit-ear_hood': 'rabbit_hood',
-    'rabbit_ear': 'rabbit_ears',
-    'rabbits': 'rabbit',
-    'race': 'racing',
-    'racequeen': 'race_queen',
-    'radial_layout': 'circle_formation',
-    'rag': 'cleaning_rag',
-    'rage': 'furious',
-    'railroad': 'railroad_tracks',
-    'railway_crossing': 'railroad_crossing',
-    'railway_tracks': 'railroad_tracks',
-    'rain_boots': 'rubber_boots',
-    'rain_doll': 'teruterubouzu',
-    'rain_drop': 'water_drop',
-    'rain_drops': 'water_drop',
-    'rainbows': 'rainbow',
-    'raindrop': 'water_drop',
-    'raindrops': 'water_drop',
-    'raining': 'rain',
-    'raised_arm': 'arm_up',
-    'raised_arms': 'arms_up',
-    'raised_finger': 'index_finger_raised',
-    'raised_hand': 'hand_up',
-    'raised_leg': 'leg_lift',
-    'raised_pinky': 'pinky_out',
-    'raised_tail': 'tail_raised',
-    'ram_horns': 'sheep_horns',
-    'ranset': 'backpack',
-    'rape_eyes': 'you_gonna_get_raped',
-    'rapeface': 'rape_face',
-    'raspberries': 'raspberry',
-    'rat': 'mouse_(animal)',
-    'rat_ears': 'mouse_ears',
-    'rat_girl': 'mouse_girl',
-    'rat_tail': 'mouse_tail',
-    'ratin': 'ranguage',
-    'rating': 'content_rating',
-    'raven_(animal)': 'crow',
-    'rawr': 'gao',
-    'raygun': 'ray_gun',
-    'razor_wire': 'barbed_wire',
-    'reach': 'reaching',
-    'reach_around': 'reach-around',
-    'reacharound': 'reach-around',
-    'reaching_out': 'reaching_towards_viewer',
-    'realization_crown': '^^^',
-    'realization_lines': 'notice_lines',
-    'rearend': 'ass',
-    'recline': 'reclining',
-    'recoilless_rifle': 'rocket_launcher',
-    'record_machine': 'phonograph',
-    'record_player': 'phonograph',
-    'records': 'record',
-    'rectangular_glasses': 'rectangular_eyewear',
-    'red-framed_glasses': 'red-framed_eyewear',
-    'red-rimmed_glasses': 'red-framed_eyewear',
-    'red_apple': 'apple',
-    'red_backpack': 'red_bag',
-    'red_bikini_bottom': 'red_bikini',
-    'red_bikini_top': 'red_bikini',
-    'red_blazer': 'red_jacket',
-    'red_blouse': 'red_shirt',
-    'red_boots': 'red_footwear',
-    'red_butt': 'spanked',
-    'red_earrings': 'earrings',
-    'red_eye': 'red_eyes',
-    'red_eyelashes': 'colored_eyelashes',
-    'red_eyepatch': 'colored_eyepatch',
-    'red_fingernails': 'red_nails',
-    'red_framed_glasses': 'red-framed_eyewear',
-    'red_head': 'red_hair',
-    'red_jabot': 'red_ascot',
-    'red_kneehighs': 'red_socks',
-    'red_lipstick': 'red_lips',
-    'red_lipstick_tube': 'lipstick_tube',
-    'red_pillow': 'pillow',
-    'red_shoes': 'red_footwear',
-    'red_string': 'string_of_fate',
-    'red_string_of_fate': 'string_of_fate',
-    'red_swimsuit': 'red_one-piece_swimsuit',
-    'red_thread': 'string_of_fate',
-    'red_underwear_(male)': 'red_male_underwear',
-    'red_yukata': 'red_kimono',
-    'redeyes': 'red_eyes',
-    'redhair': 'red_hair',
-    'redhead': 'red_hair',
-    'reflective_eyes': 'eye_reflection',
-    'regional_miku': 'worldwide_miku',
-    'reindeer_ears': 'deer_ears',
-    'reindeer_tail': 'deer_tail',
-    'relaxed': 'relaxing',
-    'remote': 'remote_control',
-    'remote_controller': 'remote_control',
-    'removing_glasses': 'removing_eyewear',
-    'removing_sunglasses': 'removing_eyewear',
-    'restaurant_booth': 'booth_seating',
-    'restricted_palette': 'limited_palette',
-    'restroom_stall': 'toilet_stall',
-    'revealing_cutout': 'revealing_layer',
-    'reverse_cowgirl': 'reverse_cowgirl_position',
-    'reverse_stand_and_carry': 'reverse_suspended_congress',
-    'rhodes_island_logo': 'rhodes_island_logo_(arknights)',
-    'rhombus': 'diamond_(shape)',
-    'ribbon_bangs': 'curtained_hair',
-    'ribbon_hair_ornament': 'hair_ribbon',
-    'ribbon_in_hair': 'hair_ribbon',
-    'ribbon_panties': 'bow_panties',
-    'ribbons': 'ribbon',
-    'ribbons_in_hair': 'hair_ribbon',
-    'ribcage': 'ribs',
-    'rice_ball': 'onigiri',
-    'rice_bowls': 'rice_bowl',
-    'rice_cracker': 'senbei',
-    'rice_field': 'rice_paddy',
-    'rice_omelet': 'omurice',
-    'rice_on_cheek': 'rice_on_face',
-    'rice_paddle': 'shamoji',
-    'rice_spoon': 'shamoji',
-    'riceball': 'onigiri',
-    'ricebowl': 'rice_bowl',
-    'riding_broom': 'broom_riding',
-    'riding_double': 'multiple_riders',
-    'rifle_on_back': 'gun_on_back',
-    'rifles': 'rifle',
-    'rimjob': 'anilingus',
-    'rimless_glasses': 'rimless_eyewear',
-    'ring_bikini': 'o-ring_bikini',
-    'rings': 'multiple_rings',
-    'ripped_bike_shorts': 'torn_bike_shorts',
-    'ripped_bikini': 'torn_bikini',
-    'ripped_bodysuit': 'torn_bodysuit',
-    'ripped_clothes': 'torn_clothes',
-    'ripped_clothing': 'torn_clothes',
-    'ripped_coat': 'torn_coat',
-    'ripped_dress': 'torn_dress',
-    'ripped_gloves': 'torn_gloves',
-    'ripped_jacket': 'torn_jacket',
-    'ripped_jeans': 'torn_jeans',
-    'ripped_leotard': 'torn_leotard',
-    'ripped_panties': 'torn_panties',
-    'ripped_pants': 'torn_pants',
-    'ripped_scarf': 'torn_scarf',
-    'ripped_shirt': 'torn_shirt',
-    'ripped_shorts': 'torn_shorts',
-    'ripped_skirt': 'torn_skirt',
-    'ripped_sleeves': 'torn_sleeves',
-    'ripped_sweater': 'torn_sweater',
-    'ripped_swimsuit': 'torn_swimsuit',
-    'ripple': 'ripples',
-    'rising_sun': 'rising_sun_flag',
-    'roach': 'cockroach',
-    'roaches': 'cockroach',
-    'road_cone': 'traffic_cone',
-    'roadsign': 'road_sign',
-    'robes': 'robe',
-    'robot_arm': 'single_mechanical_arm',
-    'robot_arms': 'single_mechanical_arm',
-    'robot_hands': 'mechanical_hands',
-    'robot_legs': 'mechanical_legs',
-    'robotic_arms': 'single_mechanical_arm',
-    'robotic_legs': 'mechanical_legs',
-    'robotification': 'mechanization',
-    'robotization': 'mechanization',
-    'rocket_pod': 'missile_pod',
-    'rockets': 'rocket',
-    'rocks': 'rock',
-    'roll_cake': 'swiss_roll',
-    'rolled-up_pants': 'pants_rolled_up',
-    'rolled-up_sleeves': 'sleeves_rolled_up',
-    'rolled_eyes': 'rolling_eyes',
-    'rolled_pants_legs': 'pants_rolled_up',
-    'rolled_sleeves': 'sleeves_rolled_up',
-    'rolled_up_sleeves': 'sleeves_rolled_up',
-    'roller_blades': 'inline_skates',
-    'rollerblades': 'inline_skates',
-    'rolleyes': 'rolling_eyes',
-    'romaji': 'romaji_text',
-    'roman_number': 'roman_numeral',
-    'roman_numbers': 'roman_numeral',
-    'roman_numerals': 'roman_numeral',
-    'romance': 'couple',
-    'romanji': 'romaji_text',
-    'roof': 'rooftop',
-    'root': 'plant_roots',
-    'roots': 'plant_roots',
-    'rope_bondage': 'shibari',
-    'rope_sash': 'rope_belt',
-    'ropebondage': 'shibari',
-    'ropes': 'rope',
-    'rori': 'loli',
-    'rose_earrings': 'flower_earrings',
-    'rose_petal_bath': 'petals_on_liquid',
-    'roses': 'rose',
-    'rough': 'sketch',
-    'rough_censoring': 'mosaic_censoring',
-    'rough_sketch': 'sketch',
-    'round_glasses': 'round_eyewear',
-    'rpg': 'rpg_(weapon)',
-    'rubber_duckie': 'rubber_duck',
-    'rubber_ducky': 'rubber_duck',
-    'rubbing_eye': 'rubbing_eyes',
-    'rubbish_bag': 'trash_bag',
-    'rubbish_bags': 'trash_bag',
-    'ruby_(gemstone)': 'red_gemstone',
-    'rucksack': 'backpack',
-    'ruffled_dress': 'frilled_dress',
-    'ruffled_skirt': 'frilled_skirt',
-    'ruffled_sleeves': 'frilled_sleeves',
-    'ruffles': 'frills',
-    'ruin': 'ruins',
-    'ruined_makeup': 'runny_makeup',
-    'rule_63': 'genderswap',
-    'run': 'running',
-    'run_away': 'fleeing',
-    'running_away': 'fleeing',
-    'running_briefs': 'buruma',
-    'russian': 'russian_text',
-    'sadness': 'sad',
-    'safety_helmet': 'hard_hat',
-    'safety_vest': 'high-visibility_vest',
-    'sailor_cap': 'sailor_hat',
-    'sailor_fuku': 'serafuku',
-    'sailor_moon_redraw_challenge': 'sailor_moon_redraw_challenge_(meme)',
-    'sailor_suit': 'sailor',
-    'sailor_uniform': 'sailor',
-    'saint_quartz': 'saint_quartz_(fate)',
-    'saisen-bako': 'donation_box',
-    'sake_carton': 'alcohol_carton',
-    'sake_cup': 'choko_(cup)',
-    'sake_dish': 'sakazuki',
-    'sake_pottery_bottle': 'tokkuri',
-    'sakura_blossoms': 'cherry_blossoms',
-    'salamander_tail': 'lizard_tail',
-    'salary_man': 'salaryman',
-    'saliva_string': 'saliva_trail',
-    'salmon_run': 'salmon_run_(splatoon)',
-    'sample': 'sample_watermark',
-    'samurai_armor': 'japanese_armor',
-    'samurai_helmet': 'kabuto_(helmet)',
-    'sandal': 'sandals',
-    'sandals_removed': 'unworn_sandals',
-    'sandcastle': 'sand_castle',
-    'sandwich_(male)': 'boy_sandwich',
-    'sandwiches': 'sandwich',
-    'santa': 'santa_costume',
-    'santa_outfit': 'santa_costume',
-    'santa_suit': 'santa_costume',
-    'sapphire_(gemstone)': 'blue_gemstone',
-    'sarashi_(chest)': 'chest_sarashi',
-    'sarashi_(midriff)': 'midriff_sarashi',
-    'scallion': 'spring_onion',
-    'scar_through_eyebrow': 'eyebrow_cut',
-    'scarf_removed': 'unworn_scarf',
-    'scarf_sharing': 'shared_scarf',
-    'scars': 'scar',
-    'scary': 'horror_(theme)',
-    'scenic': 'scenery',
-    'sceptre': 'scepter',
-    'school_girl': 'school_uniform',
-    'school_hall': 'hallway',
-    'school_swimsuits': 'school_swimsuit',
-    'school_uniforms': 'school_uniform',
-    'schoolbag': 'school_bag',
-    'schoolgirl': 'school_uniform',
-    'sci-fi': 'science_fiction',
-    'sci_fi': 'science_fiction',
-    'science_babies': 'ips_cells',
-    'scifi': 'science_fiction',
-    'scissor': 'scissors',
-    'scissor_blade': 'scissor_blade_(kill_la_kill)',
-    'scissoring': 'tribadism',
-    'scratch': 'scratches',
-    'scream': 'screaming',
-    'screen_door': 'shouji',
-    'screencap_background': 'screenshot_background',
-    'screencap_inset': 'screenshot_inset',
-    'screw_driver': 'screwdriver',
-    'scrunchie_in_mouth': 'hair_tie_in_mouth',
-    'scrunchie_on_wrist': 'wrist_scrunchie',
-    'scrunchy': 'scrunchie',
-    'sea': 'ocean',
-    'seagulls': 'seagull',
-    'seal': 'seal_(animal)',
-    'sealing_wax': 'wax_seal',
-    'searchlights': 'searchlight',
-    'seashell_bikini': 'shell_bikini',
-    'seashell_bra': 'shell_bikini',
-    'seashell_earring': 'shell_earrings',
-    'seashell_earrings': 'shell_earrings',
-    'seashell_hair_ornament': 'shell_hair_ornament',
-    'seashell_necklace': 'shell_necklace',
-    'seashells': 'seashell',
-    'see-through': 'see-through_clothes',
-    'seeds': 'seed',
-    'seethrough': 'see-through_clothes',
-    'seifuku': 'school_uniform',
-    'seiyuu': 'voice_actor',
-    'seiyuu_connection': 'voice_actor_connection',
-    'seiyuu_joke': 'voice_actor_connection',
-    'seiza_pillow': 'zabuton',
-    'self-injury': 'self-harm',
-    'self-mutilation': 'self-harm',
-    'self_facial': 'autofacial',
-    'self_fondle': 'grabbing_own_breast',
-    'self_harm': 'self-harm',
-    'self_shot': 'selfie',
-    'semen': 'cum',
-    'semen_in_anus': 'cum_in_ass',
-    'semen_in_mouth': 'cum_in_mouth',
-    'semen_in_uterus': 'internal_cumshot',
-    'semen_on_ass': 'cum_on_ass',
-    'semen_on_body': 'cum_on_body',
-    'semen_on_breasts': 'cum_on_breasts',
-    'semen_on_hair': 'cum_on_hair',
-    'semen_on_lower_body': 'cum_on_body',
-    'semen_on_pecs': 'cum_on_pectorals',
-    'semen_on_upper_body': 'cum_on_body',
-    'semi-rimless_glasses': 'semi-rimless_eyewear',
-    'semi_rimless_glasses': 'semi-rimless_eyewear',
-    'semiquaver': 'sixteenth_note',
-    'senbei_(food)': 'senbei',
-    'senko_hanabi': 'senkou_hanabi',
-    'sensei': 'teacher',
-    'sentai': 'tokusatsu',
-    'sento': 'bathhouse',
-    'septum_piercing': 'nose_ring',
-    'seraphim': 'seraph',
-    'series_connection': 'in-franchise_crossover',
-    'serving_tray': 'tray',
-    'settee': 'couch',
-    'severed_limbs': 'severed_limb',
-    'sewing_needles': 'sewing_needle',
-    'sex_change': 'genderswap',
-    'sex_invitation': 'presenting',
-    'sex_toys': 'sex_toy',
-    'sfx': 'sound_effects',
-    'shackle': 'shackles',
-    'shaded_eyes': 'shaded_face',
-    'shades': 'sunglasses',
-    'shadow_over_eyes': 'shaded_face',
-    'shadows': 'shadow',
-    'shaking_ass': 'ass_shake',
-    'shaking_hands': 'handshake',
-    'shakujo': 'shakujou',
-    'shamisen_(instrument)': 'shamisen',
-    'shared_bathing': 'same-sex_bathing',
-    'shared_bathtub': 'shared_bathing',
-    'shared_dildo': 'shared_object_insertion',
-    'shared_insertion': 'shared_object_insertion',
-    'sharing_umbrella': 'shared_umbrella',
-    'shattering': 'breaking',
-    'shaved': 'pubic_stubble',
-    'shavedice': 'shaved_ice',
-    'sheer_clothes': 'see-through_clothes',
-    'sheer_clothing': 'see-through_clothes',
-    'sheer_legwear': 'see-through_legwear',
-    'sheer_leotard': 'see-through_leotard',
-    'sheer_panties': 'see-through_panties',
-    'sheet': 'bed_sheet',
-    'sheets': 'bed_sheet',
-    'shell_bra': 'shell_bikini',
-    'shell_casings': 'shell_casing',
-    'shelves': 'shelf',
-    'shemale': 'futa_without_pussy',
-    'shh': 'shushing',
-    'shields': 'shield',
-    'shimapan': 'striped_panties',
-    'shinai_bag': 'weapon_bag',
-    'shinkaisei-kan': 'abyssal_ship',
-    'shippo': 'tail',
-    'ships': 'ship',
-    'shirikoki': 'buttjob',
-    'shirt_half_tucked_in': 'shirt_partially_tucked_in',
-    'shirt_off': 'unworn_shirt',
-    'shirt_only': 'shirt',
-    'shirt_open': 'open_shirt',
-    'shirt_pocket': 'breast_pocket',
-    'shirt_removed': 'unworn_shirt',
-    'shirt_up': 'shirt_lift',
-    'shirtless': 'topless_male',
-    'shirtlift': 'shirt_lift',
-    'shirts': 'shirt',
-    'shitagi': 'underwear',
-    'shitty_admiral': 'shitty_admiral_(phrase)',
-    'shiver': 'trembling',
-    'shivering': 'trembling',
-    'shock': 'surprised',
-    'shocked': 'surprised',
-    'shocked_eyes': 'wide-eyed',
-    'shoe': 'shoes',
-    'shoe_bow': 'footwear_bow',
-    'shoe_flower': 'footwear_flower',
-    'shoe_locker': 'getabako',
-    'shoe_lockers': 'getabako',
-    'shoe_ribbon': 'footwear_ribbon',
-    'shoes_off': 'unworn_shoes',
-    'shoes_on_hands': 'holding_shoes',
-    'shoes_removed': 'unworn_shoes',
-    'shonen-ai': 'yaoi',
-    'shooting': 'firing',
-    'shooting_glasses': 'safety_glasses',
-    'shooting_stars': 'shooting_star',
-    'shopping_bags': 'shopping_bag',
-    'shopping_trolley': 'shopping_cart',
-    'shops': 'shop',
-    'shoreline': 'shore',
-    'short-hair': 'short_hair',
-    'short_front_long_back_skirt': 'high-low_skirt',
-    'short_gloves': 'half_gloves',
-    'short_pants': 'shorts',
-    'short_puffy_sleeves': 'puffy_short_sleeves',
-    'short_skirt': 'miniskirt',
-    'short_sleeve_sweater': 'short-sleeved_sweater',
-    'short_sleeved_jacket': 'short-sleeved_jacket',
-    'short_sleeves_over_long_sleeves': 'short_over_long_sleeves',
-    'short_stack': 'shortstack',
-    'shorthair': 'short_hair',
-    'shorts_down': 'shorts_pull',
-    'shorts_removed': 'unworn_shorts',
-    'shotgun_shells': 'shotgun_shell',
-    'shougi': 'shogi',
-    'shoujo-ai': 'yuri',
-    'shoujo_bubble': 'bishie_sparkle',
-    'shoulder-length_hair': 'medium_hair',
-    'shoulder_armour': 'shoulder_armor',
-    'shoulder_cape': 'capelet',
-    'shoulder_pad': 'shoulder_pads',
-    'shoulder_ride': 'shoulder_carry',
-    'shoulderless_dress': 'strapless_dress',
-    'shoulderpads': 'shoulder_pads',
-    'shounen-ai': 'yaoi',
-    'shout': 'shouting',
-    'showing_armpits': 'armpits',
-    'shrine_gate': 'torii',
-    'shrine_maiden': 'miko',
-    'shrubbery': 'bush',
-    'shrunk_eyes': 'constricted_pupils',
-    'shrunk_pupils': 'constricted_pupils',
-    'shush': 'shushing',
-    'shuuchiin_academy_uniform': 'shuuchiin_academy_school_uniform',
-    'shuujin_academy_uniform': 'shuujin_academy_school_uniform',
-    'side': 'from_side',
-    'side-tie_bikini': 'side-tie_bikini_bottom',
-    'side_boob': 'sideboob',
-    'side_boobs': 'sideboob',
-    'side_bun': 'single_side_bun',
-    'side_by_side': 'side-by-side',
-    'side_glance': 'sideways_glance',
-    'side_mouth': 'sideways_mouth',
-    'side_release_buckle': 'snap-fit_buckle',
-    'side_tail': 'side_ponytail',
-    'side_tie_bikini': 'side-tie_bikini_bottom',
-    'side_tie_panties': 'side-tie_panties',
-    'side_view': 'from_side',
-    'sideboobs': 'sideboob',
-    'sidetail': 'side_ponytail',
-    'sighing': 'sigh',
-    'signed': 'signature',
-    'signs': 'sign',
-    'silence_gesture': 'shushing',
-    'silencer': 'suppressor',
-    'silver-framed_eyewear': 'grey-framed_eyewear',
-    'silver_eyelashes': 'colored_eyelashes',
-    'silver_eyes': 'grey_eyes',
-    'silver_jacket': 'grey_jacket',
-    'simplified_chinese': 'simplified_chinese_text',
-    'sing': 'singing',
-    'single-shoulder_cape': 'side_cape',
-    'single_barefoot': 'single_bare_foot',
-    'single_eye': 'one-eyed',
-    'single_hair_vent': 'single_hair_intake',
-    'single_handstand': 'one_arm_handstand',
-    'single_legging': 'single_leg_pantyhose',
-    'single_pantyhose_leg': 'single_leg_pantyhose',
-    'single_spaulder': 'single_pauldron',
-    'single_wristcuff': 'single_wrist_cuff',
-    'sipping': 'drinking',
-    'sit': 'sitting',
-    'sit_on_face': 'sitting_on_face',
-    'sitting_down': 'sitting',
-    'sitting_in_lap': 'sitting_on_lap',
-    'sitting_on': 'sitting_on_person',
-    'sitting_on_broom': 'broom_riding',
-    'sitting_on_desk': 'on_desk',
-    'sitting_on_floor': 'on_floor',
-    'sitting_on_ground': 'on_ground',
-    'sitting_on_knees': 'seiza',
-    'sitting_on_railing': 'on_railing',
-    'sitting_on_tree': 'sitting_in_tree',
-    'six_pack': 'abs',
-    'skeletal_arms': 'skeletal_arm',
-    'sketchpad': 'sketchbook',
-    'skillet': 'frying_pan',
-    'skintight': 'skin_tight',
-    'skintightsuit': 'skin_tight',
-    'skipping_rope': 'jump_rope',
-    'skirt_blow': 'wind_lift',
-    'skirt_carry': 'skirt_basket',
-    'skirt_off': 'unworn_skirt',
-    'skirt_over_pants': 'pants_under_skirt',
-    'skirt_over_shorts': 'shorts_under_skirt',
-    'skirt_removed': 'unworn_skirt',
-    'skirt_up': 'skirt_lift',
-    'skirtless': 'no_pants',
-    'skirtlift': 'skirt_lift',
-    'skirtsuit': 'skirt_suit',
-    'skull_earring': 'skull_earrings',
-    'skulls': 'skull',
-    'sky_background': 'sky',
-    'slacks': 'pants',
-    'slap': 'slapping',
-    'slash': 'slashing',
-    'sleep': 'sleeping',
-    'sleep_bubble': 'squeans',
-    'sleep_wear': 'sleepwear',
-    'sleeping_cap': 'nightcap',
-    'sleeping_hat': 'nightcap',
-    'sleeping_mask': 'sleep_mask',
-    'sleeping_on_another': 'sleeping_on_person',
-    'sleeve_cuff': 'sleeve_cuffs',
-    'sleeve_hold': 'pinching_sleeves',
-    'sleeve_tug': 'sleeve_grab',
-    'sleeveless_blouse': 'sleeveless_shirt',
-    'sleeves_folded_up': 'sleeves_rolled_up',
-    'sleeves_grab': 'sleeve_grab',
-    'sleeves_past_wrist': 'sleeves_past_wrists',
-    'sleeves_rolled': 'sleeves_rolled_up',
-    'slender': 'skinny',
-    'slender_waist': 'narrow_waist',
-    'slice_of_bread': 'bread_slice',
-    'slice_of_cake': 'cake_slice',
-    'slice_of_pizza': 'pizza_slice',
-    'slicked_back_hair': 'hair_slicked_back',
-    'sliding_door': 'sliding_doors',
-    'slight_smile': 'light_smile',
-    'slim_waist': 'narrow_waist',
-    'slime': 'slime_(substance)',
-    'slime_core': 'core',
-    'slimegirl': 'slime_girl',
-    'sling': 'gun_sling',
-    'sling_(firearms)': 'gun_sling',
-    'sling_(medical)': 'arm_sling',
-    'sling_bikini': 'slingshot_swimsuit',
-    'sling_swimsuit': 'slingshot_swimsuit',
-    'slingbikini': 'slingshot_swimsuit',
-    'slipper': 'slippers',
-    'slippers_removed': 'unworn_slippers',
-    'slutty_clothing': 'revealing_clothes',
-    'small_wings': 'mini_wings',
-    'smart_phone': 'smartphone',
-    'smiling': 'smile',
-    'smoking_gun': 'smoking_barrel',
-    'snacks': 'snack',
-    'snake_eyes': 'slit_pupils',
-    'snake_girl': 'lamia',
-    'snake_tongue': 'forked_tongue',
-    'snakes': 'snake',
-    'snakeskin_print': 'snake_print',
-    'sneeze': 'sneezing',
-    'sniffing': 'smelling',
-    'sniper_scope': 'scope',
-    'snooker_ball': 'billiard_ball',
-    'snot_bubble': 'nose_bubble',
-    'snow_bunny': 'snow_rabbit',
-    'snow_cone': 'shaved_ice',
-    'snowflake': 'snowflakes',
-    'snuggle': 'cuddling',
-    'so-nanoka': 'is_that_so',
-    'soaked': 'wet',
-    'sock': 'socks',
-    'sock_bow': 'bow_legwear',
-    'sock_garters': 'legwear_garter',
-    'socks_off': 'unworn_socks',
-    'socks_removed': 'unworn_socks',
-    'soda_cup': 'disposable_cup',
-    'sofa': 'couch',
-    'soft_drink': 'soda',
-    'soldiers': 'soldier',
-    'sole': 'soles',
-    'sole_female': '1girl',
-    'sole_male': '1boy',
-    'sole_other': '1other',
-    'solo_female': 'solo',
-    'somnophilia': 'sleep_molestation',
-    'song_lyrics': 'lyrics',
-    'song_title': 'song_name',
-    'sorcerer': 'wizard',
-    'sorceress': 'witch',
-    'soryu_asuka_langley_(cosplay)': 'souryuu_asuka_langley_(cosplay)',
-    'soto-hane': 'flipped_hair',
-    'soul_flame': 'hitodama',
-    'sound_suppressor': 'suppressor',
-    'sounding_staff': 'shakujou',
-    'souvenir_jacket': 'sukajan',
-    'soviet_union': 'soviet',
-    'space_craft': 'spacecraft',
-    'space_craft_interior': 'spacecraft_interior',
-    'space_hair': 'floating_hair',
-    'space_ship': 'spacecraft',
-    'spaceship': 'spacecraft',
-    'spades_(card_suit)': 'spade_(shape)',
-    'spaghetti_straps': 'spaghetti_strap',
-    'spandex_shorts': 'bike_shorts',
-    'spanish': 'spanish_text',
-    'spank_mark': 'slap_mark',
-    'spanner': 'wrench',
-    'spark': 'sparks',
-    'sparkle_eyes': 'sparkling_eyes',
-    'sparklers': 'sparkler',
-    'sparkles': 'sparkle',
-    'sparkling': 'sparkle',
-    'spats': 'bike_shorts',
-    'spaulders': 'pauldrons',
-    'speakers': 'speaker',
-    'spears': 'spear',
-    'speech_balloon': 'speech_bubble',
-    'speedo': 'swim_briefs',
-    'spellcard': 'spell_card',
-    'sperm': 'cum',
-    'sphere': 'orb',
-    'spider_arms': 'arthropod_limbs',
-    'spider_legs': 'arthropod_limbs',
-    'spider_webs': 'spider_web',
-    'spiderweb': 'spider_web',
-    'spiderwebs': 'spider_web',
-    'spike': 'spikes',
-    'spike_collar': 'spiked_collar',
-    'spiked_bracelets': 'spiked_bracelet',
-    'spiked_shoulders': 'shoulder_spikes',
-    'spiked_teeth': 'sharp_teeth',
-    'spikey_hair': 'spiked_hair',
-    'spiky_hair': 'spiked_hair',
-    'spilled': 'spill',
-    'spin': 'spinning',
-    'spiral_eyes': '@_@',
-    'spiral_glasses': 'coke-bottle_glasses',
-    'spirit_flame': 'hitodama',
-    'spit': 'saliva',
-    'spitting_fire': 'breathing_fire',
-    'splash': 'splashing',
-    'split_hair_colors': 'split-color_hair',
-    'split_tongue': 'forked_tongue',
-    'splits': 'split',
-    'spoken_emoticon': 'spoken_expression',
-    'spoken_meat': 'spoken_food',
-    'spoken_note': 'spoken_musical_note',
-    'spoken_person': 'spoken_character',
-    'spoon_in_mouth': 'utensil_in_mouth',
-    'spoons': 'spoon',
-    'sport': 'playing_sports',
-    'sports': 'playing_sports',
-    'sports_jersey': 'jersey',
-    'sports_uniform': 'sportswear',
-    'spot_colors': 'spot_color',
-    'spread_bar': 'spreader_bar',
-    'spread_dress': 'circle_skirt',
-    'spread_leg': 'spread_legs',
-    'spread_skirt': 'circle_skirt',
-    'spread_vagina': 'spread_pussy',
-    'spreadpussy': 'spread_pussy',
-    'sprite': 'pixel_art',
-    'sprites': 'sprite',
-    'spying': 'peeking',
-    'square_halo': 'rectangular_halo',
-    'square_mouth': 'rectangular_mouth',
-    'squat': 'squatting',
-    'squeeze': 'squeezing',
-    'squint': 'squinting',
-    'squinted_eyes': 'squinting',
-    'squirt_gun': 'water_gun',
-    'squirting_(sex)': 'female_ejaculation',
-    'st._chronica_academy_uniform': 'st._chronica_academy_school_uniform',
-    'stabbed': 'stab',
-    'stabbing': 'stab',
-    'stack_of_pancakes': 'pancake_stack',
-    'stacked_books': 'book_stack',
-    'stair': 'stairs',
-    'staircase': 'stairs',
-    'stairway': 'stairs',
-    'stall': 'market_stall',
-    'stall_(market)': 'market_stall',
-    'stall_(toilet)': 'toilet_stall',
-    'stanag_magazine': 'magazine_(weapon)',
-    'stand_and_carry': 'suspended_congress',
-    'standing_in_liquid': 'wading',
-    'standing_on_hands': 'handstand',
-    'standing_on_one_foot': 'standing_on_one_leg',
-    'standing_on_one_hand': 'one_arm_handstand',
-    'standing_on_water': 'standing_on_liquid',
-    'star_earring': 'star_earrings',
-    'star_eyes': '+_+',
-    'stare': 'staring',
-    'staring_at_breasts': 'looking_at_breasts',
-    'starlight_academy_uniform': 'starlight_academy_school_uniform',
-    'starman_(mario)': 'super_star_(mario)',
-    'starry_eyes': '+_+',
-    'stars_(sky)': 'star_(sky)',
-    'stars_in_eye': 'star_in_eye',
-    'startled': 'surprised',
-    'stealing': 'theft',
-    'steam_punk': 'steampunk',
-    'steamed_bun': 'baozi',
-    'stepping_on_person': 'stepped_on',
-    'steps': 'stairs',
-    'stern': 'serious',
-    'stewardess': 'travel_attendant',
-    'sticker_on_cheek': 'sticker_on_face',
-    'stickers': 'sticker',
-    'stink': 'smell',
-    'stoat_ears': 'weasel_ears',
-    'stoat_tail': 'weasel_tail',
-    'stocking': 'thighhighs',
-    'stocking_cap': 'santa_hat',
-    'stocking_stuffer': 'christmas_stocking',
-    'stockings': 'thighhighs',
-    'stomach_growl': 'stomach_growling',
-    'stomach_peek': 'midriff_peek',
-    'stomp': 'stomping',
-    'stoplight': 'traffic_light',
-    'store': 'shop',
-    'straddle': 'straddling',
-    'straddle_penis': 'thigh_sex',
-    'straight_jacket': 'straitjacket',
-    'straightjacket': 'straitjacket',
-    'strangle': 'strangling',
-    'strap_cleavage': 'strap_between_breasts',
-    'strap_on': 'strap-on',
-    'strapless_swimsuit': 'strapless_one-piece_swimsuit',
-    'strapon': 'strap-on',
-    'straps': 'strap',
-    'stratocaster': 'fender_stratocaster',
-    'straw_(drinking)': 'drinking_straw',
-    'straw_in_mouth': 'stalk_in_mouth',
-    'straw_in_mouth_(drinking)': 'drinking_straw_in_mouth',
-    'strawberries': 'strawberry',
-    'streaming': 'livestream',
-    'street_lamp': 'lamppost',
-    'street_light': 'lamppost',
-    'street_lights': 'lamppost',
-    'street_sign': 'road_sign',
-    'streetlamp': 'lamppost',
-    'streetlight': 'lamppost',
-    'streetlights': 'lamppost',
-    'stretch': 'stretching',
-    'stretched_earlobes': 'long_earlobes',
-    'striker_units': 'striker_unit',
-    'string_figure': 'cat\'s_cradle',
-    'strings': 'string',
-    'strip': 'undressing',
-    'striped_blouse': 'striped_shirt',
-    'striped_clothing': 'striped_clothes',
-    'striped_hat': 'striped_headwear',
-    'striped_kneehighs': 'striped_socks',
-    'striped_swimsuit': 'striped_one-piece_swimsuit',
-    'striped_tie': 'striped_necktie',
-    'striped_yukata': 'striped_kimono',
-    'stripped_panties': 'striped_panties',
-    'stripping': 'undressing',
-    'stroking_chin': 'stroking_own_chin',
-    'structural_formula': 'chemical_structure',
-    'struggle': 'struggling',
-    'stuck_in_wall': 'through_wall',
-    'stud_belt': 'studded_belt',
-    'studbelt': 'studded_belt',
-    'studded_penis': 'spiked_penis',
-    'studio_connection': 'company_connection',
-    'stuffed_alicorn': 'stuffed_winged_unicorn',
-    'stuffed_animals': 'stuffed_animal',
-    'stuffed_bear': 'teddy_bear',
-    'stuffed_bunny': 'stuffed_rabbit',
-    'stuffed_doll': 'stuffed_toy',
-    'subtitles': 'subtitled',
-    'succubus': 'demon_girl',
-    'sucking_breasts': 'breast_sucking',
-    'sucking_cock': 'fellatio',
-    'sucking_dick': 'fellatio',
-    'sucking_finger': 'finger_sucking',
-    'sucking_nipples': 'breast_sucking',
-    'sucking_nipples_(male)': 'sucking_male_nipple',
-    'sucking_penis': 'fellatio',
-    'sucking_testicles': 'testicle_sucking',
-    'sucking_thumb': 'thumb_sucking',
-    'suckle': 'breastfeeding',
-    'suds': 'soap_bubbles',
-    'suffocation': 'asphyxiation',
-    'sugar_cube_(object)': 'sugar_cube',
-    'sugar_cubes': 'sugar_cube',
-    'suika_bar': 'watermelon_bar',
-    'sukimizu': 'school_swimsuit',
-    'sukumizu': 'school_swimsuit',
-    'sumata': 'thigh_sex',
-    'summer_dress': 'sundress',
-    'summerdress': 'sundress',
-    'sun_(symbol)': 'sun_symbol',
-    'sun_dress': 'sundress',
-    'sun_lounger': 'lounge_chair',
-    'sunblock': 'sunscreen',
-    'suncream': 'sunscreen',
-    'sunflowers': 'sunflower',
-    'sunglasses_on_head': 'eyewear_on_head',
-    'sunglasses_removed': 'unworn_eyewear',
-    'sunhat': 'sun_hat',
-    'sunken_nipples': 'inverted_nipples',
-    'sunlight_through_trees': 'dappled_sunlight',
-    'sunny_side_up_egg': 'fried_egg',
-    'sunshine': 'sunlight',
-    'suntan': 'tan',
-    'suntan_lotion': 'sunscreen',
-    'super_deformed': 'chibi',
-    'super_saiyan_god_super_saiyan': 'super_saiyan_blue',
-    'supercar': 'sports_car',
-    'superhero': 'superhero_costume',
-    'superheroes': 'superhero_costume',
-    'supine': 'on_back',
-    'surprise': 'surprised',
-    'sushi_roll': 'makizushi',
-    'suspended': 'suspension',
-    'suspender': 'suspenders',
-    'suzuran': 'lily_of_the_valley',
-    'swearing': 'profanity',
-    'sweat_band': 'sweatband',
-    'sweat_bands': 'sweatband',
-    'sweat_drop': 'sweatdrop',
-    'sweat_drops': 'sweatdrop',
-    'sweat_pants': 'sweatpants',
-    'sweatbands': 'sweatband',
-    'sweatdrops': 'sweatdrop',
-    'sweaterdress': 'sweater_dress',
-    'sweating': 'sweat',
-    'sweating_profusely': 'nervous_sweating',
-    'sweatshirt': 'sweater',
-    'swim_ring': 'innertube',
-    'swim_shirt': 'rash_guard',
-    'swim_suit': 'swimsuit',
-    'swimcap': 'swim_cap',
-    'swimfins': 'flippers',
-    'swimming_briefs': 'swim_briefs',
-    'swimming_cap': 'swim_cap',
-    'swimming_pool': 'pool',
-    'swimming_trunks': 'swim_trunks',
-    'swimsuit_down': 'one-piece_swimsuit_pull',
-    'swimsuit_pull': 'one-piece_swimsuit_pull',
-    'swimsuit_removed': 'unworn_swimsuit',
-    'swimsuits': 'swimsuit',
-    'swimtrunks': 'swim_trunks',
-    'swimwear_(male)': 'male_swimwear',
-    'swings': 'swing',
-    'swirly_eyes': '@_@',
-    'swirly_glasses': 'coke-bottle_glasses',
-    'sword_bag': 'weapon_bag',
-    'sword_in_ground': 'planted_sword',
-    'sword_on_back': 'weapon_on_back',
-    'sword_out_of_chest': 'human_scabbard',
-    'sword_sheath': 'scabbard',
-    'swords': 'sword',
-    'symbol_shaped_pupils': 'symbol-shaped_pupils',
-    'symbolic': 'symbolism',
-    'symmetrical': 'symmetry',
-    't-rex': 'tyrannosaurus_rex',
-    't-shirt_dress': 'long_shirt',
-    't_shirt': 't-shirt',
-    'table_sex': 'table_humping',
-    'table_tennis_racket': 'table_tennis_paddle',
-    'tablesex': 'table_humping',
-    'tablet_pen': 'stylus',
-    'tactical_clothing': 'tactical_clothes',
-    'tail-tip_fire': 'flame-tipped_tail',
-    'tail_bells': 'tail_bell',
-    'tail_cutout': 'tail_through_clothes',
-    'tail_fin': 'fish_tail',
-    'tail_heart': 'heart_tail',
-    'tail_hold': 'holding_with_tail',
-    'tail_hug': 'hugging_tail',
-    'tail_lift': 'lifted_by_tail',
-    'tail_lifted': 'tail_raised',
-    'tail_slit_clothes': 'tail_through_clothes',
-    'tail_up': 'tail_raised',
-    'tail_wag': 'tail_wagging',
-    'tailbell': 'tail_bell',
-    'tailbells': 'tail_bell',
-    'tails': 'multiple_tails',
-    'taint': 'perineum',
-    'take_it_easy': 'yukkuri_shiteitte_ne',
-    'taken_from_behind': 'sex_from_behind',
-    'tallies': 'tally',
-    'tally_marks': 'tally',
-    'tan_line': 'tanlines',
-    'tan_lines': 'tanlines',
-    'tangerine': 'mandarin_orange',
-    'tangled_up': 'entangled',
-    'tank_focus': 'vehicle_focus',
-    'tank_top_lift': 'shirt_lift',
-    'tankoubon_cover': 'manga_cover',
-    'tanks': 'tank',
-    'tanktop': 'tank_top',
-    'tanline': 'tanlines',
-    'tanned': 'tan',
-    'tanned_skin': 'tan',
-    'tanuki_ears': 'raccoon_ears',
-    'tanuki_girl': 'raccoon_girl',
-    'tanuki_tail': 'raccoon_tail',
-    'tanukimimi': 'raccoon_ears',
-    'tape_gagged': 'tape_gag',
-    'tapegag': 'tape_gag',
-    'tapioca_challenge': 'bubble_tea_challenge',
-    'tarot_(card)': 'tarot_card',
-    'tarot_card': 'tarot',
-    'tarot_cards': 'tarot',
-    'tartan_skirt': 'plaid_skirt',
-    'tassel_hat_ornament': 'hat_tassel',
-    'tassels': 'tassel',
-    'tassle': 'tassel',
-    'tatoo': 'tattoo',
-    'tattered_cape': 'torn_cape',
-    'tattooed_breast': 'breast_tattoo',
-    'tattoos': 'tattoo',
-    'taut_blouse': 'taut_shirt',
-    'taut_clothing': 'taut_clothes',
-    'tdi_vector': 'kriss_vector',
-    'tea_cup': 'teacup',
-    'tea_pot': 'teapot',
-    'teacups': 'teacup',
-    'teal_eyes': 'aqua_eyes',
-    'teal_hair': 'aqua_hair',
-    'team_9': 'team_9_(touhou)',
-    'tear': 'tears',
-    'tease': 'teasing',
-    'teddybear': 'teddy_bear',
-    'teeth_necklace': 'tooth_necklace',
-    'tekoki': 'handjob',
-    'telephone': 'phone',
-    'telephone_booth': 'phone_booth',
-    'telephone_pole': 'utility_pole',
-    'television_screen': 'television',
-    'tennis_shoes': 'sneakers',
-    'tenshi': 'angel',
-    'tentacle': 'tentacles',
-    'tentacles_with_male': 'tentacles_on_male',
-    'terrified': 'scared',
-    'testicle_licking': 'licking_testicle',
-    'testicles_under_clothes': 'covered_testicles',
-    'text': 'text_focus',
-    'text_bubble': 'speech_bubble',
-    'text_censor': 'censored_by_text',
-    'text_on_body': 'body_writing',
-    'text_on_clothes': 'clothes_writing',
-    'text_only_page': 'text-only_page',
-    'texting': 'text_messaging',
-    'textured_hair': 'patterned_hair',
-    'thai': 'thai_text',
-    'thanks': 'thank_you',
-    'that_pool': 'rei_no_pool',
-    'the_finger': 'middle_finger',
-    'the_usual_pool': 'rei_no_pool',
-    'they_had_lots_of_sex_afterwards': 'they_had_lots_of_sex_afterwards_(meme)',
-    'thick_ass': 'huge_ass',
-    'thick_penis': 'girthy_penis',
-    'thigh': 'thighs',
-    'thigh_band': 'thigh_strap',
-    'thigh_belt': 'thigh_strap',
-    'thigh_cup': 'wakamezake',
-    'thigh_garter': 'bridal_garter',
-    'thigh_highs': 'thighhighs',
-    'thigh_job': 'thigh_sex',
-    'thigh_lace-up': 'thigh_ribbon',
-    'thigh_straddle': 'thigh_straddling',
-    'thigh_straps': 'thigh_strap',
-    'thigh_tattoo': 'leg_tattoo',
-    'thighband': 'thigh_strap',
-    'thighboots': 'thigh_boots',
-    'thighhgihs': 'thighhighs',
-    'thighhigh': 'single_thighhigh',
-    'thighhigh_boots': 'thigh_boots',
-    'thighhigh_bow': 'bow_legwear',
-    'thighhigh_garter': 'legwear_garter',
-    'thighhigh_pull': 'thighhighs_pull',
-    'thighhighs_only': 'thighhighs',
-    'thighhighs_removed': 'unworn_thighhighs',
-    'thighhigs': 'thighhighs',
-    'thighighs': 'thighhighs',
-    'thighjob': 'thigh_sex',
-    'thighthick': 'thick_thighs',
-    'thin': 'skinny',
-    'thin_waist': 'narrow_waist',
-    'thong_panties': 'thong',
-    'thought_balloon': 'thought_bubble',
-    'threads': 'thread',
-    'three-piece_suit': 'suit',
-    'throw': 'throwing',
-    'throwing_knives': 'throwing_knife',
-    'throwing_stars': 'shuriken',
-    'thrown_kiss': 'blowing_kiss',
-    'thumbsucking': 'thumb_sucking',
-    'thunder_thighs': 'thick_thighs',
-    'tickle': 'tickling',
-    'tie': 'necktie',
-    'tie_grab': 'necktie_grab',
-    'tie_pin': 'tie_clip',
-    'tie_tack': 'tie_clip',
-    'tied': 'tied_up_(nonsexual)',
-    'tied_arms': 'bound_arms',
-    'tied_hands': 'bound_wrists',
-    'tied_together': 'bound_together',
-    'tied_up': 'tied_up_(nonsexual)',
-    'tied_up_(sexual)': 'bondage',
-    'tied_wrists': 'bound_wrists',
-    'tiegrab': 'necktie_grab',
-    'tiger_suit': 'tiger_costume',
-    'tigerprint': 'tiger_print',
-    'tight': 'tight_clothes',
-    'tights': 'pantyhose',
-    'tile': 'tiles',
-    'tile_background': 'grid_background',
-    'time_stamp': 'timestamp',
-    'tiny_crown': 'mini_crown',
-    'tiny_hat': 'mini_hat',
-    'tiny_top_hat': 'mini_top_hat',
-    'tiny_wings': 'mini_wings',
-    'tip-toe': 'tiptoes',
-    'tip-toes': 'tiptoes',
-    'tip_toe': 'tiptoes',
-    'tip_toes': 'tiptoes',
-    'tipping_hat': 'hat_tip',
-    'tiptoe': 'tiptoes',
-    'tire': 'unused_tire',
-    'tires': 'unused_tire',
-    'tissue_wad': 'used_tissue',
-    'tissue_wads': 'used_tissue',
-    'tissuebox': 'tissue_box',
-    'tissues': 'tissue',
-    'tit_fuck': 'paizuri',
-    'tit_window': 'cleavage_cutout',
-    'titfuck': 'paizuri',
-    'titjob': 'paizuri',
-    'title_drop': 'copyright_name',
-    'title_name': 'copyright_name',
-    'tits': 'breasts',
-    'titty_buds': 'flat_chest',
-    'toast_(gesture)': 'toasting_(gesture)',
-    'tobibako': 'vaulting_horse',
-    'toddlersex': 'toddlercon',
-    'toe-point': 'plantar_flexion',
-    'toe-point_down': 'plantar_flexion',
-    'toe-point_up': 'dorsiflexion',
-    'toe-scrunch': 'toe_scrunch',
-    'toe-spread': 'spread_toes',
-    'toe_beans': 'pawpads',
-    'toe_curl': 'toe_scrunch',
-    'toeless_boots': 'toeless_footwear',
-    'toeless_shoes': 'toeless_footwear',
-    'toeless_socks': 'toeless_legwear',
-    'toenail': 'toenails',
-    'toffee_apple': 'candy_apple',
-    'tokin': 'tokin_hat',
-    'tokyo-3_middle_school_uniform_(evangelion)': 'tokyo-3_middle_school_uniform',
-    'tomatoes': 'tomato',
-    'tondo': 'round_image',
-    'tongue_kiss': 'french_kiss',
-    'tongues': 'tongue',
-    'too_many_scars': 'scars_all_over',
-    'too_small': 'undersized_clothes',
-    'tool': 'tools',
-    'toon': 'toon_(style)',
-    'top-down-bottom-up': 'top-down_bottom-up',
-    'top_down_bottom_up': 'top-down_bottom-up',
-    'top_knot': 'topknot',
-    'top_less': 'topless',
-    'top_lift': 'shirt_lift',
-    'tophat': 'top_hat',
-    'topless_(female)': 'topless',
-    'toque': 'beanie',
-    'torii_(gate)': 'torii',
-    'torii_gate': 'torii',
-    'torn_armor': 'broken_armor',
-    'torn_blouse': 'torn_shirt',
-    'torn_clothing': 'torn_clothes',
-    'torn_ear': 'notched_ear',
-    'tornclothes': 'torn_clothes',
-    'torpedo_breasts': 'pointy_breasts',
-    'touching_another\'s_ear': 'hand_on_another\'s_ear',
-    'touching_own_ear': 'hand_on_own_ear',
-    'towel_on_shoulders': 'towel_around_neck',
-    'towel_wrap': 'naked_towel',
-    'toweling_off': 'drying',
-    'towels': 'towel',
-    'toys': 'toy',
-    'track': 'running_track',
-    'tracksuit': 'track_suit',
-    'trademark_notice': 'copyright_notice',
-    'trading_cards': 'trading_card',
-    'traditional_chinese': 'traditional_chinese_text',
-    'traditional_japanese_clothes': 'japanese_clothes',
-    'traffic_cones': 'traffic_cone',
-    'traffic_lights': 'traffic_light',
-    'traffic_sign': 'road_sign',
-    'traffic_signal': 'traffic_light',
-    'train_crossing': 'railroad_crossing',
-    'train_tracks': 'railroad_tracks',
-    'transformation_sequence': 'henshin',
-    'transformationsequence': 'henshin',
-    'transforming': 'transformation',
-    'translucent_sarong': 'see-through_sarong',
-    'translucent_skin': 'see-through_body',
-    'transparency': 'transparent',
-    'transparent_clothing': 'see-through_clothes',
-    'transparent_gif': 'transparent_background',
-    'transparent_hair': 'translucent_hair',
-    'transparent_png': 'transparent_background',
-    'transparent_shirt': 'see-through_shirt',
-    'transparent_skin': 'see-through_body',
-    'transparent_skirt': 'see-through_skirt',
-    'transparent_sleeves': 'see-through_sleeves',
-    'transvestite': 'crossdressing',
-    'trap': 'otoko_no_ko',
-    'trash_bags': 'trash_bag',
-    'trashcan': 'trash_can',
-    'treble_clef_hair_ornament': 'musical_note_hair_ornament',
-    'tree_branch': 'branch',
-    'tree_sitting': 'sitting_in_tree',
-    'trees': 'tree',
-    'tremble': 'trembling',
-    'trembling_penis': 'twitching_penis',
-    'trenchcoat': 'trench_coat',
-    'tricolor_dango': 'sanshoku_dango',
-    'tricorne_hat': 'tricorne',
-    'trip': 'tripping',
-    'triple-tails': 'tri_tails',
-    'triple_persona': 'multiple_persona',
-    'tripped': 'tripping',
-    'trollface': 'troll_face',
-    'trousers': 'pants',
-    'truncheon': 'baton_(weapon)',
-    'tshirt': 't-shirt',
-    'tsurupeta': 'flat_chest',
-    'tubes': 'tube',
-    'tubetop': 'tube_top',
-    'tucked_in_shirt': 'shirt_tucked_in',
-    'tucking_in': 'covering_with_blanket',
-    'tulips': 'tulip',
-    'tummy_grab': 'belly_grab',
-    'tuque': 'beanie',
-    'turning': 'looking_back',
-    'turquoise_eyes': 'aqua_eyes',
-    'turquoise_hair': 'aqua_hair',
-    'turtle_neck': 'turtleneck',
-    'tusk': 'tusks',
-    'tutorial': 'how_to',
-    'tv': 'television',
-    'twerk': 'ass_shake',
-    'twerking': 'ass_shake',
-    'twig_in_mouth': 'stalk_in_mouth',
-    'twin_braid': 'twin_braids',
-    'twin_bun': 'double_bun',
-    'twin_buns': 'double_bun',
-    'twin_tails': 'twintails',
-    'twinbraid': 'twin_braids',
-    'twinbraids': 'twin_braids',
-    'twindrills': 'twin_drills',
-    'twintaiks': 'twintails',
-    'twintail': 'twintails',
-    'twirling': 'spinning',
-    'twitch_stream': 'livestream',
-    'twitter_strip_game_(meme)': 'twitter_strip_game',
-    'two-tone-hair': 'two-tone_hair',
-    'two_handed': 'two-handed',
-    'two_handed_handjob': 'two-handed_handjob',
-    'two_sides_up': 'two_side_up',
-    'two_tone_hair': 'two-tone_hair',
-    'type_24_(chiang_kai-shek_rifle)': 'mauser_98',
-    'ufo_catcher': 'crane_game',
-    'uk_flag': 'union_jack',
-    'ukiyo_e': 'ukiyo-e',
-    'ukiyoe': 'ukiyo-e',
-    'ultraball': 'ultra_ball',
-    'ump': 'h&k_ump',
-    'unaligned_ears': 'single_ear_down',
-    'unbuckled_belt': 'open_belt',
-    'unbuttoned_pants': 'open_fly',
-    'unbuttoned_shorts': 'open_fly',
-    'uncensoring': 'uncensored',
-    'uncircumcised': 'foreskin',
-    'unclasped': 'unfastened',
-    'under-rim_glasses': 'under-rim_eyewear',
-    'under_blanket': 'under_covers',
-    'under_boob': 'underboob',
-    'under_desk': 'under_table',
-    'under_rim_glasses': 'under-rim_eyewear',
-    'under_the_table': 'under_table',
-    'under_water': 'underwater',
-    'underbreast': 'underboob',
-    'undergarments': 'underwear',
-    'undersized_clothing': 'undersized_clothes',
-    'underwear_(male)': 'male_underwear',
-    'underwear_peek_(male)': 'male_underwear_peek',
-    'underwear_pull_(male)': 'male_underwear_pull',
-    'undone_belt': 'open_belt',
-    'undress': 'undressing',
-    'undressed': 'unworn_clothes',
-    'unexpressive': 'expressionless',
-    'unfastened_bra': 'open_bra',
-    'unfinished_background': 'sketch_background',
-    'unhooked': 'unfastened',
-    'unhooked_bra': 'open_bra',
-    'united_kingdom_flag': 'union_jack',
-    'unmasked': 'unworn_mask',
-    'unmoving_plaid': 'unmoving_pattern',
-    'untied_boots': 'untied_footwear',
-    'untied_bra': 'open_bra',
-    'untied_necktie': 'undone_necktie',
-    'untied_shoes': 'untied_footwear',
-    'untouched_ejaculation': 'handsfree_ejaculation',
-    'upper_teeth': 'upper_teeth_only',
-    'upside-down_cross': 'inverted_cross',
-    'upside_down': 'upside-down',
-    'upsidedown': 'upside-down',
-    'urban_style': 'streetwear',
-    'urethral_object_push': 'urethral_insertion',
-    'urine': 'pee',
-    'url': 'web_address',
-    'usa_(country)': 'united_states',
-    'ushimimi': 'cow_ears',
-    'using_toilet': 'toilet_use',
-    'utaite_(singer)': 'utaite',
-    'utility_knife': 'boxcutter',
-    'uva_academy_uniform': 'uva_academy_school_uniform',
-    'v-arms': 'v_arms',
-    'v_neck': 'v-neck',
-    'v_sign': 'v',
-    'vacuum': 'vacuum_cleaner',
-    'vacuum_fellatio': ':>=',
-    'vagina': 'pussy',
-    'vaginal_insertion': 'vaginal_object_insertion',
-    'vaginal_juices': 'pussy_juice',
-    'vaginal_object_push': 'vaginal_object_insertion',
-    'vaginal_penetration': 'vaginal',
-    'vaginal_sex': 'vaginal',
-    'valentien': 'valentine',
-    'valentine\'s_day': 'valentine',
-    'valentines': 'valentine',
-    'valentines_day': 'valentine',
-    'vambrace': 'vambraces',
-    'vampyr': 'vampire',
-    'vapor_trail': 'contrail',
-    'vapor_trails': 'contrail',
-    'varsity_jacket': 'letterman_jacket',
-    'vegetables': 'vegetable',
-    'vein': 'veins',
-    'veiny': 'veins',
-    'venus_sign': 'venus_symbol',
-    'verandah': 'veranda',
-    'vertical-striped_blouse': 'vertical-striped_shirt',
-    'vertical-striped_clothing': 'vertical-striped_clothes',
-    'vertical-striped_hat': 'vertical-striped_headwear',
-    'vertical-striped_kneehighs': 'vertical-striped_socks',
-    'vertical-striped_yukata': 'vertical-striped_kimono',
-    'vertical_flag': 'banner',
-    'very_perky_breasts': 'pointy_breasts',
-    'vials': 'vial',
-    'vibrators': 'vibrator',
-    'victrola': 'phonograph',
-    'video_game_console': 'game_console',
-    'video_games': 'video_game',
-    'videogame': 'video_game',
-    'videogames': 'video_game',
-    'vietnamese_dress': 'ao_dai',
-    'view_from_above': 'from_above',
-    'view_from_below': 'from_below',
-    'viewed_from_above': 'from_above',
-    'viewed_from_behind': 'from_behind',
-    'viewed_from_below': 'from_below',
-    'viewed_from_side': 'from_side',
-    'vine': 'vines',
-    'vinyl_disc': 'record',
-    'violet_eyes': 'purple_eyes',
-    'violet_hair': 'purple_hair',
-    'violin_bow': 'bow_(music)',
-    'violoncello': 'cello',
-    'virgin': 'defloration',
-    'voice_actress': 'voice_actor',
-    'voluptuous': 'curvy',
-    'voyeur': 'voyeurism',
-    'vr_goggles': 'head-mounted_display',
-    'vr_headset': 'head-mounted_display',
-    'vr_visor': 'head-mounted_display',
-    'vtuber': 'virtual_youtuber',
-    'vulva': 'pussy',
-    'w-legs': 'wariza',
-    'w-sitting': 'wariza',
-    'w_legs': 'wariza',
-    'w_sitting': 'wariza',
-    'wadingpool': 'wading_pool',
-    'waffles': 'waffle',
-    'wafuku': 'japanese_clothes',
-    'wagasa': 'oil-paper_umbrella',
-    'wagging': 'tail_wagging',
-    'wagging_tail': 'tail_wagging',
-    'waist_chain': 'belly_chain',
-    'waist_coat': 'waistcoat',
-    'waist_grab': 'torso_grab',
-    'waist_veil': 'pelvic_curtain',
-    'waist_wings': 'low_wings',
-    'wakeboard': 'kickboard',
-    'walk_in': 'walk-in',
-    'walker': 'walker_(robot)',
-    'walkie_talkie': 'walkie-talkie',
-    'walking_in_liquid': 'wading',
-    'walking_on_water': 'walking_on_liquid',
-    'walking_stick': 'cane',
-    'wall_scroll': 'hanging_scroll',
-    'wall_slam': 'kabedon',
-    'wall_stuck': 'through_wall',
-    'wand_vibrator': 'hitachi_magic_wand',
-    'wandoro': 'one-hour_drawing_challenge',
-    'wanted': 'wanted_poster',
-    'war_axe': 'battle_axe',
-    'warhammer': 'war_hammer',
-    'warning_tape': 'caution_tape',
-    'waste_bag': 'trash_bag',
-    'waste_bags': 'trash_bag',
-    'wastebasket': 'trash_can',
-    'watching_tv': 'watching_television',
-    'water_droplets': 'water_drop',
-    'water_drops': 'water_drop',
-    'water_hair': 'liquid_hair',
-    'water_hose': 'hose',
-    'water_lily': 'lily_pad',
-    'water_lily_pad': 'lily_pad',
-    'water_magic': 'hydrokinesis',
-    'water_manipulation': 'hydrokinesis',
-    'water_pipe': 'industrial_pipe',
-    'water_pistol': 'water_gun',
-    'watergun': 'water_gun',
-    'watering_pail': 'watering_can',
-    'watering_pot': 'watering_can',
-    'watermarked': 'watermark',
-    'watermelon_popsicle': 'watermelon_bar',
-    'watermelon_splitting_game': 'suikawari',
-    'watermelons': 'watermelon',
-    'watersports': 'peeing',
-    'wave': 'waving',
-    'weapon_cover_bag': 'weapon_bag',
-    'weapon_sheet': 'weapon_focus',
-    'weapongirl': 'mecha_musume',
-    'weapons': 'weapon',
-    'web': 'spider_web',
-    'web_print': 'spider_web_print',
-    'wedding_band': 'wedding_ring',
-    'wedding_kimono': 'uchikake',
-    'wedding_veil': 'bridal_veil',
-    'weddingdress': 'wedding_dress',
-    'weibo_username': 'weibo_watermark',
-    'weighing_scales': 'weighing_scale',
-    'weight_scale': 'weighing_scale',
-    'wellingtons': 'rubber_boots',
-    'western': 'cowboy_western',
-    'wet_blouse': 'wet_shirt',
-    'wet_body': 'wet',
-    'wet_clothing': 'wet_clothes',
-    'wet_pussy': 'pussy_juice',
-    'wet_skin': 'wet',
-    'wet_t-shirt': 'wet_shirt',
-    'wetclothes': 'wet_clothes',
-    'wetshirt': 'wet_shirt',
-    'whale_tail': 'whale_tail_(clothing)',
-    'whale_tail_(animal_tail)': 'cetacean_tail',
-    'what_if': 'alternate_universe',
-    'wheat_in_mouth': 'stalk_in_mouth',
-    'wheels': 'wheel',
-    'whipmarks': 'whip_marks',
-    'whips': 'whip',
-    'whisker': 'whiskers',
-    'whisper': 'whispering',
-    'white-framed_glasses': 'white-framed_eyewear',
-    'white_backpack': 'white_bag',
-    'white_bikini_bottom': 'white_bikini',
-    'white_bikini_top': 'white_bikini',
-    'white_blouse': 'white_shirt',
-    'white_boots': 'white_footwear',
-    'white_dove': 'dove',
-    'white_earrings': 'earrings',
-    'white_eyelashes': 'colored_eyelashes',
-    'white_fingernails': 'white_nails',
-    'white_glove': 'white_gloves',
-    'white_jabot': 'white_ascot',
-    'white_kneehighs': 'white_socks',
-    'white_pillow': 'pillow',
-    'white_shoes': 'white_footwear',
-    'white_swimsuit': 'white_one-piece_swimsuit',
-    'white_underwear_(male)': 'white_male_underwear',
-    'white_vs_black': 'black_vs_white',
-    'white_yukata': 'white_kimono',
-    'whitehair': 'white_hair',
-    'whorled_clouds': 'xiangyun',
-    'wide-leg_pants': 'bell-bottoms',
-    'wide_eyed': 'wide-eyed',
-    'wide_eyes': 'wide-eyed',
-    'wideface': 'wide_face',
-    'wind-up_key': 'winding_key',
-    'windchime': 'wind_chime',
-    'windlift': 'wind_lift',
-    'windmills': 'windmill',
-    'window_shade': 'window_shadow',
-    'window_sill': 'windowsill',
-    'windowbox': 'border',
-    'windowboxed': 'border',
-    'windy': 'wind',
-    'wine_carton': 'alcohol_carton',
-    'wineglass': 'wine_glass',
-    'wing': 'wings',
-    'wing_helmet': 'winged_helmet',
-    'winged_boots': 'winged_footwear',
-    'winged_shoes': 'winged_footwear',
-    'wink': 'one_eye_closed',
-    'winking': 'winking_(animated)',
-    'winter_jacket': 'winter_coat',
-    'wiping_eyes': 'rubbing_eyes',
-    'wires': 'wire',
-    'witch_costume': 'witch',
-    'witches_hat': 'witch_hat',
-    'witchhat': 'witch_hat',
-    'womb': 'uterus',
-    'womb_tattoo': 'pubic_tattoo',
-    'wooden_katana': 'bokken',
-    'woods': 'forest',
-    'word_bubble': 'speech_bubble',
-    'working_out': 'exercising',
-    'worms': 'worm',
-    'wound': 'deep_wound',
-    'wounded': 'injury',
-    'wounds': 'injury',
-    'wrinkles': 'wrinkled_skin',
-    'wrist_band': 'wristband',
-    'wrist_bands': 'wristband',
-    'wrist_cuff': 'wrist_cuffs',
-    'wrist_grab': 'holding_another\'s_wrist',
-    'wrist_watch': 'wristwatch',
-    'wrist_wraps': 'wrist_wrap',
-    'wristbands': 'wristband',
-    'wristcuff': 'wrist_cuffs',
-    'wristcuffs': 'wrist_cuffs',
-    'wristlet': 'bracelet',
-    'wrists_bound': 'bound_wrists',
-    'writing_brush': 'calligraphy_brush',
-    'writing_on_another\'s_face': 'drawing_on_another\'s_face',
-    'writing_on_body': 'body_writing',
-    'wrong_feet': 'wrong_foot',
-    'wtf': 'what',
-    'wwii': 'world_war_ii',
-    'wz.29': 'mauser_98',
-    'x-shaped_choker': 'cross_tie',
-    'x_bandaids': 'crossed_bandaids',
-    'x_buster': 'arm_cannon',
-    'x_pasties': 'cross_pasties',
-    'x_ray': 'x-ray',
-    'x_scar': 'cross_scar',
-    'xmas': 'christmas',
-    'xray': 'x-ray',
-    'y2k_(fashion)': 'y2k_fashion',
-    'yakiimo': 'roasted_sweet_potato',
-    'yam': 'sweet_potato',
-    'yamakasa': 'mizu_happi',
-    'yams': 'sweet_potato',
-    'yangire': 'crazy',
-    'yankee': 'delinquent',
-    'yarnball': 'yarn_ball',
-    'yawn': 'yawning',
-    'year_of_the_boar': 'year_of_the_pig',
-    'yelling': 'shouting',
-    'yellow-framed_glasses': 'yellow-framed_eyewear',
-    'yellow_backpack': 'yellow_bag',
-    'yellow_bikini_bottom': 'yellow_bikini',
-    'yellow_bikini_top': 'yellow_bikini',
-    'yellow_blouse': 'yellow_shirt',
-    'yellow_boots': 'yellow_footwear',
-    'yellow_earrings': 'earrings',
-    'yellow_eyepatch': 'colored_eyepatch',
-    'yellow_fingernails': 'yellow_nails',
-    'yellow_hair': 'blonde_hair',
-    'yellow_jabot': 'yellow_ascot',
-    'yellow_kneehighs': 'yellow_socks',
-    'yellow_lipstick': 'yellow_lips',
-    'yellow_pillow': 'pillow',
-    'yellow_shoes': 'yellow_footwear',
-    'yellow_swimsuit': 'yellow_one-piece_swimsuit',
-    'yellow_yukata': 'yellow_kimono',
-    'yelloweyes': 'yellow_eyes',
-    'yen_symbol': 'yen_sign',
-    'yin-yang': 'yin_yang',
-    'ying-yang': 'yin_yang',
-    'ying_yang': 'yin_yang',
-    'yinyang': 'yin_yang',
-    'yoga_ball': 'exercise_ball',
-    'yolk': 'egg_yolk',
-    'yonkoma': '4koma',
-    'youkai': 'traditional_youkai',
-    'younger': 'aged_down',
-    'yoyo': 'yo-yo',
-    'yukkuri': 'yukkuri_shiteitte_ne',
-    'z_buster': 'arm_cannon',
-    'zebra_crossing': 'crosswalk',
-    'zeppelin': 'dirigible',
-    'zero_buster': 'arm_cannon',
-    'zettai_ryouki': 'zettai_ryouiki',
-    'zippers': 'zipper',
-    'zombies': 'zombie',
-    'zoomlayer': 'zoom_layer',
-    'zoophilia': 'bestiality',
-    '||_||': '|_|'
-};
-
-// Patterns that should always be filtered out
-const BAD_TAG_PATTERNS = [
-    /eyes?$/i, /hair$/i, /skin$/i, /_glow$/i, /lips?$/i,      // appearance
-    /moment$/i, /feeling/i, /emotion/i, /connection/i,         // abstract
-    /intimate/i, /affection/i, /love$/i, /warmth/i,            // abstract
-    /contemplat/i, /simulation/i, /creative/i,                 // abstract
-    /masterpiece/i, /best_quality/i, /highres/i, /quality/i,   // quality tags
-    /render$/i, /3d_/i, /digital$/i,                           // style tags
-    /circuitry/i, /algorithm/i, /data$/i,                      // tech abstract
-    /hum$/i, /feeling$/i                                        // more abstract
-];
-
-function resolveTag(tag) {
-    // Direct match
-    if (VALID_BOORU_TAGS.has(tag)) return tag;
-    // Try alias
-    const aliased = TAG_ALIASES[tag];
-    if (aliased && VALID_BOORU_TAGS.has(aliased)) return aliased;
-    // Try suffix matching: strip leading components
-    const parts = tag.split('_');
-    for (let i = 1; i < parts.length; i++) {
-        const suffix = parts.slice(i).join('_');
-        if (VALID_BOORU_TAGS.has(suffix)) return suffix;
-    }
-    return null;
-}
-
-function cleanTags(rawTags, charName) {
-    let tags = rawTags
-        .split(',')
-        .map(t => t.trim().toLowerCase().replace(/\s+/g, '_'))
-        .filter(t => t.length > 1)
-        // Filter out bad patterns
-        .filter(t => !BAD_TAG_PATTERNS.some(pattern => pattern.test(t)))
-        // Resolve tags with suffix-matching fallback
-        .map(t => resolveTag(t))
-        .filter(t => t !== null)
-        // Dedupe
-        .filter((t, i, arr) => arr.indexOf(t) === i)
-        // Max 15 tags
-        .slice(0, 15);
-
-    // Always inject 1girl at the start
-    if (!tags.includes('1girl')) {
-        tags.unshift('1girl');
-    }
-
-    return tags.join(', ');
-}
-
-async function generateVisualDescription(sceneText) {
+function onMessageReceived(id) {
     const s = extension_settings[extensionName];
+    if (!s?.enabled) return;
+    if (!s?.autoGenEnabled) return; // Skip if auto-generation is disabled
 
-    const messages = [
-        { role: 'system', content: DESCRIPTION_GEN_CONFIG.systemPrompt },
-        { role: 'user', content: sceneText }
-    ];
+    const chat = getContext().chat;
+    if (!chat || !chat.length) return;
 
-    const requestBody = {
-        model: s.tagModel,
-        messages: messages,
-        max_tokens: DESCRIPTION_GEN_CONFIG.max_tokens,
-        temperature: DESCRIPTION_GEN_CONFIG.temperature,
-        top_p: DESCRIPTION_GEN_CONFIG.top_p,
-        frequency_penalty: DESCRIPTION_GEN_CONFIG.frequency_penalty,
-        presence_penalty: DESCRIPTION_GEN_CONFIG.presence_penalty
-    };
+    const lastMsg = chat[chat.length - 1];
+    // Only trigger on AI messages (not user, not system)
+    if (lastMsg.is_user || lastMsg.is_system) return;
 
-    const headers = { 'Content-Type': 'application/json' };
-    if (s.tagApiKey) {
-        headers['Authorization'] = `Bearer ${s.tagApiKey}`;
-    }
-
-    const response = await fetch(s.tagApiEndpoint, {
-        method: 'POST',
-        headers: headers,
-        body: JSON.stringify(requestBody)
-    });
-
-    if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`Description API failed (${response.status}): ${error}`);
-    }
-
-    const data = await response.json();
-    let result = data.choices[0].message.content;
-
-    // Strip thinking tags (for reasoning models)
-    if (result.includes('</think>')) {
-        result = result.split('</think>').pop().trim();
-    }
-    result = result.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-    result = result.replace(/<\/?think>/gi, '').trim();
-
-    return result;
-}
-
-async function generateTagsWithCustomApi(sceneText) {
-    const s = extension_settings[extensionName];
-
-    // Validate configuration
-    if (!s.tagApiEndpoint || !s.tagModel) {
-        throw new Error("Tag API not configured. Please set endpoint and model.");
-    }
-
-    // Get character name for macro replacement
-    const charName = getContext().name2 || 'Character';
-
-    // Build messages array using hardcoded config
-    const messages = [
-        {
-            role: 'system',
-            content: TAG_GEN_CONFIG.systemPrompt.replace(/\{\{char\}\}/gi, charName)
-        },
-        {
-            role: 'user',
-            content: sceneText
-        },
-        {
-            role: 'system',
-            content: TAG_GEN_CONFIG.jailbreakPrompt.replace(/\{\{char\}\}/gi, charName)
-        }
-    ];
-
-    // Build request body using hardcoded settings
-    const requestBody = {
-        model: s.tagModel,
-        messages: messages,
-        max_tokens: TAG_GEN_CONFIG.max_tokens,
-        temperature: TAG_GEN_CONFIG.temperature,
-        top_p: TAG_GEN_CONFIG.top_p,
-        frequency_penalty: TAG_GEN_CONFIG.frequency_penalty,
-        presence_penalty: TAG_GEN_CONFIG.presence_penalty
-    };
-
-    // Make API request
-    const headers = { 'Content-Type': 'application/json' };
-    if (s.tagApiKey) {
-        headers['Authorization'] = `Bearer ${s.tagApiKey}`;
-    }
-
-    const response = await fetch(s.tagApiEndpoint, {
-        method: 'POST',
-        headers: headers,
-        body: JSON.stringify(requestBody)
-    });
-
-    if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`Tag API request failed (${response.status}): ${error}`);
-    }
-
-    const data = await response.json();
-    let result = data.choices[0].message.content;
-
-    // Strip thinking/reasoning tags and any content before </think>
-    if (result.includes('</think>')) {
-        result = result.split('</think>').pop().trim();
-    }
-    result = result.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-    result = result.replace(/<\/?think>/gi, '').trim();
-
-    // Clean and filter tags
-    result = cleanTags(result, charName);
-
-    // Ensure character name is first
-    if (!result.toLowerCase().startsWith(charName.toLowerCase())) {
-        result = charName + ', ' + result;
-    }
-
-    return result;
-}
-
-/* --- UPDATED GENERATION LOGIC --- */
-async function onGeneratePrompt() {
-    if (!extension_settings[extensionName].enabled) return;
-    const context = getContext();
-    if (!context.chat || context.chat.length === 0) return toastr.warning("No chat history.");
-
-    const s = extension_settings[extensionName];
-
-    // Validate API configuration
-    if (!s.tagApiEndpoint || !s.tagModel) {
-        toastr.error("Tag API not configured. Please set endpoint and model.");
+    // Prevent concurrent generations
+    if (isGenerating) {
+        console.log(`[${extensionName}] Skipping - generation already in progress`);
         return;
     }
 
-    // [START PROGRESS]
-    showKazumaProgress("Summarizing Scene...");
+    // Enforce cooldown
+    const now = Date.now();
+    if (now - lastGenerationTime < GENERATION_COOLDOWN) {
+        console.log(`[${extensionName}] Skipping - cooldown active`);
+        return;
+    }
 
-    try {
-        toastr.info("Visualizing...", "Image Gen Kazuma");
-        const lastMessage = context.chat[context.chat.length - 1].mes;
+    console.log(`[${extensionName}] Auto-generating background...`);
+    lastGenerationTime = now;
+    setTimeout(onGeneratePrompt, 500);
+}
 
-        // Stage 1: Summarize roleplay into visual description
-        const visualDescription = await generateVisualDescription(lastMessage);
-        console.log(`[${extensionName}] Visual description: ${visualDescription}`);
+// === SETTINGS MANAGEMENT ===
 
-        // Stage 2: Generate booru tags from the clean description
-        showKazumaProgress("Generating Tags...");
-        let generatedText = await generateTagsWithCustomApi(visualDescription);
+async function loadSettings() {
+    if (!extension_settings[extensionName]) {
+        extension_settings[extensionName] = {};
+    }
 
-        if (s.debugPrompt) {
-            // Hide progress while user is confirming
-            hideKazumaProgress();
-
-            const $content = $(`
-                <div style="display: flex; flex-direction: column; gap: 10px;">
-                    <p><b>Review generated prompt:</b></p>
-                    <textarea class="text_pole" rows="6" style="width:100%; resize:vertical; font-family:monospace;">${generatedText}</textarea>
-                </div>
-            `);
-            let currentText = generatedText;
-            $content.find("textarea").on("input", function() { currentText = $(this).val(); });
-            const popup = new Popup($content, POPUP_TYPE.CONFIRM, "Diagnostic Mode", { okButton: "Send", cancelButton: "Stop" });
-            const confirmed = await popup.show();
-
-            if (!confirmed) {
-                toastr.info("Generation stopped by user.");
-                return;
-            }
-            generatedText = currentText;
-            // Show progress again
-            showKazumaProgress("Sending to ComfyUI...");
+    for (const key in defaultSettings) {
+        if (typeof extension_settings[extensionName][key] === 'undefined') {
+            extension_settings[extensionName][key] = defaultSettings[key];
         }
-
-        // Update progress text
-        showKazumaProgress("Sending to ComfyUI...");
-        await generateWithComfy(generatedText, null);
-
-    } catch (err) {
-        // [HIDE PROGRESS ON ERROR]
-        hideKazumaProgress();
-        console.error(err);
-        toastr.error(`Generation failed: ${err.message}`);
-    }
-}
-
-async function generateWithComfy(positivePrompt, target = null) {
-    const url = extension_settings[extensionName].comfyUrl;
-    const currentName = extension_settings[extensionName].currentWorkflowName;
-
-    // Load from server
-    let workflowRaw;
-    try {
-        const res = await fetch('/api/sd/comfy/workflow', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify({ file_name: currentName }) });
-        if (!res.ok) throw new Error("Load failed");
-        workflowRaw = await res.json();
-    } catch (e) { return toastr.error(`Could not load ${currentName}`); }
-
-    let workflow = (typeof workflowRaw === 'string') ? JSON.parse(workflowRaw) : workflowRaw;
-
-    let finalSeed = parseInt(extension_settings[extensionName].customSeed);
-    if (finalSeed === -1 || isNaN(finalSeed)) {
-        finalSeed = Math.floor(Math.random() * 1000000000);
     }
 
-    workflow = injectParamsIntoWorkflow(workflow, positivePrompt, finalSeed);
-
-    try {
-        toastr.info("Sending to ComfyUI...", "Image Gen Kazuma");
-        const res = await fetch(`${url}/prompt`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: workflow }) });
-        if(!res.ok) throw new Error("Failed");
-        const data = await res.json();
-        await waitForGeneration(url, data.prompt_id, positivePrompt, target);
-    } catch(e) { toastr.error("Comfy Error: " + e.message); }
-}
-
-function injectParamsIntoWorkflow(workflow, promptText, finalSeed) {
     const s = extension_settings[extensionName];
-    let seedInjected = false;
 
-    for (const nodeId in workflow) {
-        const node = workflow[nodeId];
-        if (node.inputs) {
-            for (const key in node.inputs) {
-                const val = node.inputs[key];
+    $("#kazuma_enable").prop("checked", s.enabled);
+    $("#kazuma_auto_gen").prop("checked", s.autoGenEnabled);
+    $("#kazuma_url").val(s.comfyUrl);
+    $("#kazuma_tag_endpoint").val(s.tagApiEndpoint || "");
+    $("#kazuma_tag_api_key").val(s.tagApiKey || "");
+    $("#kazuma_tag_model").val(s.tagModel || "");
 
-                if (val === "*input*") node.inputs[key] = promptText;
-                if (val === "*ninput*") node.inputs[key] = s.customNegative || "";
-                if (val === "*seed*") { node.inputs[key] = finalSeed; seedInjected = true; }
-                if (val === "*sampler*") node.inputs[key] = s.selectedSampler || "euler";
-                if (val === "*model*") node.inputs[key] = s.selectedModel || "v1-5-pruned.ckpt";
+    // LoRA weights
+    $("#kazuma_lora_wt").val(s.selectedLoraWt);
+    $("#kazuma_lora_wt_display").text(s.selectedLoraWt);
+    $("#kazuma_lora_wt_2").val(s.selectedLoraWt2);
+    $("#kazuma_lora_wt_display_2").text(s.selectedLoraWt2);
+    $("#kazuma_lora_wt_3").val(s.selectedLoraWt3);
+    $("#kazuma_lora_wt_display_3").text(s.selectedLoraWt3);
+    $("#kazuma_lora_wt_4").val(s.selectedLoraWt4);
+    $("#kazuma_lora_wt_display_4").text(s.selectedLoraWt4);
 
-                if (val === "*steps*") node.inputs[key] = parseInt(s.steps) || 20;
-                if (val === "*cfg*") node.inputs[key] = parseFloat(s.cfg) || 7.0;
-                if (val === "*denoise*") node.inputs[key] = parseFloat(s.denoise) || 1.0;
-                if (val === "*clip_skip*") node.inputs[key] = -Math.abs(parseInt(s.clipSkip)) || -1;
-
-                if (val === "*lora*") node.inputs[key] = s.selectedLora || "None";
-                if (val === "*lora2*") node.inputs[key] = s.selectedLora2 || "None";
-                if (val === "*lora3*") node.inputs[key] = s.selectedLora3 || "None";
-                if (val === "*lora4*") node.inputs[key] = s.selectedLora4 || "None";
-                if (val === "*lorawt*") node.inputs[key] = parseFloat(s.selectedLoraWt) || 1.0;
-                if (val === "*lorawt2*") node.inputs[key] = parseFloat(s.selectedLoraWt2) || 1.0;
-                if (val === "*lorawt3*") node.inputs[key] = parseFloat(s.selectedLoraWt3) || 1.0;
-                if (val === "*lorawt4*") node.inputs[key] = parseFloat(s.selectedLoraWt4) || 1.0;
-
-                if (val === "*width*") node.inputs[key] = parseInt(s.imgWidth) || 512;
-                if (val === "*height*") node.inputs[key] = parseInt(s.imgHeight) || 512;
-            }
-            if (!seedInjected && node.class_type === "KSampler" && 'seed' in node.inputs && typeof node.inputs['seed'] === 'number') {
-               node.inputs.seed = finalSeed;
-            }
-        }
-    }
-    return workflow;
+    await fetchComfyLists();
 }
 
-async function onImageSwiped(data) {
-    if (!extension_settings[extensionName].enabled) return;
-    const { message, direction, element } = data;
-    const context = getContext();
-    const settings = context.powerUserSettings || window.power_user;
+// === INITIALIZATION ===
 
-    if (direction !== "right") return;
-    if (settings && settings.image_overswipe !== "generate") return;
-    if (message.name !== "Image Gen Kazuma") return;
-
-    const media = message.extra?.media || [];
-    const idx = message.extra?.media_index || 0;
-
-    if (idx < media.length - 1) return;
-
-    const mediaObj = media[idx];
-    if (!mediaObj || !mediaObj.title) return;
-
-    const prompt = mediaObj.title;
-    toastr.info("New variation...", "Image Gen Kazuma");
-    await generateWithComfy(prompt, { message: message, element: $(element) });
-}
-
-async function waitForGeneration(baseUrl, promptId, positivePrompt, target) {
-     // [UPDATE TEXT]
-     showKazumaProgress("Rendering Image...");
-
-     // Show popout loading if using popout
-     const s = extension_settings[extensionName];
-     if (s.usePopout && !target) {
-         showPopoutLoading("Rendering...");
-         if (s.autoOpenPopout && !KAZUMA_POPOUT_VISIBLE) {
-             openKazumaPopout();
-         }
-     }
-
-     const checkInterval = setInterval(async () => {
-        try {
-            const h = await (await fetch(`${baseUrl}/history/${promptId}`)).json();
-            if (h[promptId]) {
-                clearInterval(checkInterval);
-                const outputs = h[promptId].outputs;
-                let finalImage = null;
-                for (const nodeId in outputs) {
-                    const nodeOutput = outputs[nodeId];
-                    if (nodeOutput.images && nodeOutput.images.length > 0) {
-                        finalImage = nodeOutput.images[0];
-                        break;
-                    }
-                }
-                if (finalImage) {
-                    // [UPDATE TEXT]
-                    showKazumaProgress("Downloading...");
-
-                    const imgUrl = `${baseUrl}/view?filename=${finalImage.filename}&subfolder=${finalImage.subfolder}&type=${finalImage.type}`;
-                    await insertImageToChat(imgUrl, positivePrompt, target);
-
-                    // [HIDE WHEN DONE]
-                    hideKazumaProgress();
-                    hidePopoutLoading();
-                } else {
-                    hideKazumaProgress();
-                    hidePopoutLoading();
-                }
-            }
-        } catch (e) { }
-    }, 1000);
-}
-
-function blobToBase64(blob) { return new Promise((resolve) => { const reader = new FileReader(); reader.onloadend = () => resolve(reader.result); reader.readAsDataURL(blob); }); }
-
-function compressImage(base64Str, quality = 0.9) {
-    return new Promise((resolve) => {
-        const img = new Image();
-        img.src = base64Str;
-        img.onload = () => {
-            const canvas = document.createElement('canvas');
-            canvas.width = img.width;
-            canvas.height = img.height;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(img, 0, 0);
-            resolve(canvas.toDataURL("image/jpeg", quality));
-        };
-        img.onerror = () => resolve(base64Str);
-    });
-}
-
-// --- SAVE TO SERVER ---
-async function insertImageToChat(imgUrl, promptText, target = null) {
-    try {
-        toastr.info("Downloading image...", "Image Gen Kazuma");
-        const response = await fetch(imgUrl);
-        const blob = await response.blob();
-        let base64FullURL = await blobToBase64(blob);
-
-        let format = "png";
-        if (extension_settings[extensionName].compressImages) {
-            base64FullURL = await compressImage(base64FullURL, 0.9);
-            format = "jpeg";
-        }
-
-        // --- POPOUT ROUTING ---
-        const s = extension_settings[extensionName];
-        if (s.usePopout && !target) {
-            // Update popout with the image
-            updatePopoutImage(base64FullURL, promptText, base64FullURL);
-
-            // Auto-open popout if enabled
-            if (s.autoOpenPopout && !KAZUMA_POPOUT_VISIBLE) {
-                openKazumaPopout();
-            }
-
-            // If not also saving to chat, we're done
-            if (!s.alsoSaveToChat) {
-                toastr.success("Image ready in pop-out!");
-                return;
-            }
-            // Otherwise continue to save to chat as well
-        }
-
-        const base64Raw = base64FullURL.split(',')[1];
-        const context = getContext();
-        let characterName = "User";
-        if (context.groupId) {
-            characterName = context.groups.find(x => x.id === context.groupId)?.id;
-        } else if (context.characterId) {
-            characterName = context.characters[context.characterId]?.name;
-        }
-        if (!characterName) characterName = "User";
-
-        const filename = `${characterName}_${humanizedDateTime()}`;
-        const savedPath = await saveBase64AsFile(base64Raw, characterName, filename, format);
-
-        const mediaAttachment = {
-            url: savedPath,
-            type: "image",
-            source: "generated",
-            title: promptText,
-            generation_type: "free",
-        };
-
-        if (target && target.message) {
-            if (!target.message.extra) target.message.extra = {};
-            if (!target.message.extra.media) target.message.extra.media = [];
-            target.message.extra.media_display = "gallery";
-            target.message.extra.media.push(mediaAttachment);
-            target.message.extra.media_index = target.message.extra.media.length - 1;
-            if (typeof appendMediaToMessage === "function") appendMediaToMessage(target.message, target.element);
-            await saveChat();
-            toastr.success("Gallery updated!");
-        } else {
-            const newMessage = {
-                name: "Image Gen Kazuma", is_user: false, is_system: true, send_date: Date.now(),
-                mes: "", extra: { media: [mediaAttachment], media_display: "gallery", media_index: 0, inline_image: false }, force_avatar: "img/five.png"
-            };
-            context.chat.push(newMessage);
-            await saveChat();
-            if (typeof addOneMessage === "function") addOneMessage(newMessage);
-            else await reloadCurrentChat();
-            toastr.success("Image inserted!");
-        }
-
-    } catch (err) { console.error(err); toastr.error("Failed to save/insert image."); }
-}
-
-// --- INIT ---
 jQuery(async () => {
     try {
-        // 1. INJECT PROGRESS BAR HTML (New Code Here)
+        // Inject progress bar HTML
         if ($("#kazuma_progress_overlay").length === 0) {
             $("body").append(`
                 <div id="kazuma_progress_overlay">
@@ -8066,181 +780,136 @@ jQuery(async () => {
             `);
         }
 
-        // 2. Load Settings & Bind Events
+        // Load HTML template
         await $.get(`${extensionFolderPath}/example.html`).then(h => $("#extensions_settings2").append(h));
 
-        $("#kazuma_enable").on("change", (e) => { extension_settings[extensionName].enabled = $(e.target).prop("checked"); saveSettingsDebounced(); });
-        $("#kazuma_debug").on("change", (e) => { extension_settings[extensionName].debugPrompt = $(e.target).prop("checked"); saveSettingsDebounced(); });
-        $("#kazuma_url").on("input", (e) => { extension_settings[extensionName].comfyUrl = $(e.target).val(); saveSettingsDebounced(); });
-        $("#kazuma_auto_enable").on("change", (e) => { extension_settings[extensionName].autoGenEnabled = $(e.target).prop("checked"); saveSettingsDebounced(); });
-        $("#kazuma_auto_freq").on("input", (e) => { let v = parseInt($(e.target).val()); if(v<1)v=1; extension_settings[extensionName].autoGenFreq = v; saveSettingsDebounced(); });
+        // Add standalone regenerate background button near send button
+        const addRegenButton = () => {
+            if ($("#kazuma_regen_btn").length > 0) return; // Already added
 
-        // Tag Generation API event handlers
-        $("#kazuma_tag_endpoint").on("input", (e) => { extension_settings[extensionName].tagApiEndpoint = $(e.target).val(); saveSettingsDebounced(); });
-        $("#kazuma_tag_api_key").on("input", (e) => { extension_settings[extensionName].tagApiKey = $(e.target).val(); saveSettingsDebounced(); });
-        $("#kazuma_tag_model").on("input", (e) => { extension_settings[extensionName].tagModel = $(e.target).val(); saveSettingsDebounced(); });
+            const $sendForm = $("#send_form");
+            const $rightSendForm = $("#rightSendForm");
 
-        // Pop-out settings event handlers
-        $("#kazuma_popout_toggle").on("click", (e) => { e.stopPropagation(); toggleKazumaPopout(); });
-        $("#kazuma_use_popout").on("change", (e) => { extension_settings[extensionName].usePopout = $(e.target).prop("checked"); saveSettingsDebounced(); });
-        $("#kazuma_auto_open_popout").on("change", (e) => { extension_settings[extensionName].autoOpenPopout = $(e.target).prop("checked"); saveSettingsDebounced(); });
-        $("#kazuma_show_prompt_popout").on("change", (e) => { extension_settings[extensionName].showPromptInPopout = $(e.target).prop("checked"); saveSettingsDebounced(); });
-        $("#kazuma_also_save_chat").on("change", (e) => { extension_settings[extensionName].alsoSaveToChat = $(e.target).prop("checked"); saveSettingsDebounced(); });
+            if ($rightSendForm.length > 0) {
+                // Create button matching SillyTavern's style
+                const regenBtn = $(`
+                    <div id="kazuma_regen_btn" class="fa-solid fa-panorama interactable"
+                         tabindex="0" title="Generate VN Background"
+                         data-i18n="[title]Generate VN Background"></div>
+                `);
 
-        // Inject popout HTML structure
-        injectPopoutHTML();
+                regenBtn.on("click", () => {
+                    if (!extension_settings[extensionName].enabled) {
+                        toastr.warning("VN Background Gen is disabled");
+                        return;
+                    }
+                    console.log(`[${extensionName}] Manual background generation triggered`);
+                    onGeneratePrompt();
+                });
 
-        // SMART WORKFLOW SWITCHER
-        $("#kazuma_workflow_list").on("change", (e) => {
-            const newWorkflow = $(e.target).val();
-            const oldWorkflow = extension_settings[extensionName].currentWorkflowName;
-
-            // 1. Snapshot OLD workflow settings
-            if (oldWorkflow) {
-                if (!extension_settings[extensionName].savedWorkflowStates) extension_settings[extensionName].savedWorkflowStates = {};
-                extension_settings[extensionName].savedWorkflowStates[oldWorkflow] = getWorkflowState();
-                console.log(`[${extensionName}] Saved context for ${oldWorkflow}`);
+                // Prepend to right side (before send button)
+                $rightSendForm.prepend(regenBtn);
+                console.log(`[${extensionName}] Regen button added to rightSendForm`);
             }
+        };
 
-            // 2. Load NEW workflow settings (if they exist)
-            if (extension_settings[extensionName].savedWorkflowStates && extension_settings[extensionName].savedWorkflowStates[newWorkflow]) {
-                applyWorkflowState(extension_settings[extensionName].savedWorkflowStates[newWorkflow]);
-                toastr.success(`Restored settings for ${newWorkflow}`);
-            } else {
-                // If no saved state, we keep current values (Inheritance) - smoother UX
-                toastr.info(`New workflow context active`);
-            }
+        // Try immediately and also observe for DOM changes
+        addRegenButton();
+        const observer = new MutationObserver(() => addRegenButton());
+        observer.observe(document.body, { childList: true, subtree: true });
 
-            // 3. Update Pointer
-            extension_settings[extensionName].currentWorkflowName = newWorkflow;
+        // Stop observing after 10 seconds
+        setTimeout(() => observer.disconnect(), 10000);
+
+        // Bind event handlers
+        $("#kazuma_enable").on("change", (e) => {
+            extension_settings[extensionName].enabled = $(e.target).prop("checked");
             saveSettingsDebounced();
         });
-        $("#kazuma_import_btn").on("click", () => $("#kazuma_import_file").click());
 
-        $("#kazuma_new_workflow").on("click", onComfyNewWorkflowClick);
-        $("#kazuma_edit_workflow").on("click", onComfyOpenWorkflowEditorClick);
-        $("#kazuma_delete_workflow").on("click", onComfyDeleteWorkflowClick);
-
-        $("#kazuma_model_list").on("change", (e) => { extension_settings[extensionName].selectedModel = $(e.target).val(); saveSettingsDebounced(); });
-        $("#kazuma_sampler_list").on("change", (e) => { extension_settings[extensionName].selectedSampler = $(e.target).val(); saveSettingsDebounced(); });
-        $("#kazuma_resolution_list").on("change", (e) => {
-            const idx = parseInt($(e.target).val());
-            if (!isNaN(idx) && RESOLUTIONS[idx]) {
-                const r = RESOLUTIONS[idx];
-                $("#kazuma_width").val(r.w).trigger("input");
-                $("#kazuma_height").val(r.h).trigger("input");
-            }
+        $("#kazuma_auto_gen").on("change", (e) => {
+            extension_settings[extensionName].autoGenEnabled = $(e.target).prop("checked");
+            saveSettingsDebounced();
         });
 
-        $("#kazuma_lora_list").on("change", (e) => { extension_settings[extensionName].selectedLora = $(e.target).val(); saveSettingsDebounced(); });
-        $("#kazuma_lora_list_2").on("change", (e) => { extension_settings[extensionName].selectedLora2 = $(e.target).val(); saveSettingsDebounced(); });
-        $("#kazuma_lora_list_3").on("change", (e) => { extension_settings[extensionName].selectedLora3 = $(e.target).val(); saveSettingsDebounced(); });
-        $("#kazuma_lora_list_4").on("change", (e) => { extension_settings[extensionName].selectedLora4 = $(e.target).val(); saveSettingsDebounced(); });
-        $("#kazuma_lora_wt").on("input", (e) => { let v = parseFloat($(e.target).val()); extension_settings[extensionName].selectedLoraWt = v; $("#kazuma_lora_wt_display").text(v); saveSettingsDebounced(); });
-        $("#kazuma_lora_wt_2").on("input", (e) => { let v = parseFloat($(e.target).val()); extension_settings[extensionName].selectedLoraWt2 = v; $("#kazuma_lora_wt_display_2").text(v); saveSettingsDebounced(); });
-        $("#kazuma_lora_wt_3").on("input", (e) => { let v = parseFloat($(e.target).val()); extension_settings[extensionName].selectedLoraWt3 = v; $("#kazuma_lora_wt_display_3").text(v); saveSettingsDebounced(); });
-        $("#kazuma_lora_wt_4").on("input", (e) => { let v = parseFloat($(e.target).val()); extension_settings[extensionName].selectedLoraWt4 = v; $("#kazuma_lora_wt_display_4").text(v); saveSettingsDebounced(); });
+        $("#kazuma_url").on("input", (e) => {
+            extension_settings[extensionName].comfyUrl = $(e.target).val();
+            saveSettingsDebounced();
+        });
 
-        $("#kazuma_width, #kazuma_height").on("input", (e) => { extension_settings[extensionName][e.target.id === "kazuma_width" ? "imgWidth" : "imgHeight"] = parseInt($(e.target).val()); saveSettingsDebounced(); });
-        $("#kazuma_negative").on("input", (e) => { extension_settings[extensionName].customNegative = $(e.target).val(); saveSettingsDebounced(); });
-        $("#kazuma_seed").on("input", (e) => { extension_settings[extensionName].customSeed = parseInt($(e.target).val()); saveSettingsDebounced(); });
-        $("#kazuma_compress").on("change", (e) => { extension_settings[extensionName].compressImages = $(e.target).prop("checked"); saveSettingsDebounced(); });
+        $("#kazuma_tag_endpoint").on("input", (e) => {
+            extension_settings[extensionName].tagApiEndpoint = $(e.target).val();
+            saveSettingsDebounced();
+        });
 
-        function bindSlider(id, key, isFloat = false) {
-            $(`#${id}`).on("input", function() {
-                let v = isFloat ? parseFloat(this.value) : parseInt(this.value);
-                extension_settings[extensionName][key] = v;
-                $(`#${id}_val`).val(v);
-                saveSettingsDebounced();
-            });
-            $(`#${id}_val`).on("input", function() {
-                let v = isFloat ? parseFloat(this.value) : parseInt(this.value);
-                extension_settings[extensionName][key] = v;
-                $(`#${id}`).val(v);
-                saveSettingsDebounced();
-            });
-        }
-        bindSlider("kazuma_steps", "steps", false);
-        bindSlider("kazuma_cfg", "cfg", true);
-        bindSlider("kazuma_denoise", "denoise", true);
-        bindSlider("kazuma_clip", "clipSkip", false);
+        $("#kazuma_tag_api_key").on("input", (e) => {
+            extension_settings[extensionName].tagApiKey = $(e.target).val();
+            saveSettingsDebounced();
+        });
+
+        $("#kazuma_tag_model").on("input", (e) => {
+            extension_settings[extensionName].tagModel = $(e.target).val();
+            saveSettingsDebounced();
+        });
 
         $("#kazuma_test_btn").on("click", onTestConnection);
-        $("#kazuma_gen_prompt_btn").on("click", onGeneratePrompt);
 
+        $("#kazuma_model_list").on("change", (e) => {
+            extension_settings[extensionName].selectedModel = $(e.target).val();
+            saveSettingsDebounced();
+        });
+
+        // LoRA dropdowns
+        $("#kazuma_lora_list").on("change", (e) => {
+            extension_settings[extensionName].selectedLora = $(e.target).val();
+            saveSettingsDebounced();
+        });
+        $("#kazuma_lora_list_2").on("change", (e) => {
+            extension_settings[extensionName].selectedLora2 = $(e.target).val();
+            saveSettingsDebounced();
+        });
+        $("#kazuma_lora_list_3").on("change", (e) => {
+            extension_settings[extensionName].selectedLora3 = $(e.target).val();
+            saveSettingsDebounced();
+        });
+        $("#kazuma_lora_list_4").on("change", (e) => {
+            extension_settings[extensionName].selectedLora4 = $(e.target).val();
+            saveSettingsDebounced();
+        });
+
+        // LoRA weight sliders
+        $("#kazuma_lora_wt").on("input", (e) => {
+            let v = parseFloat($(e.target).val());
+            extension_settings[extensionName].selectedLoraWt = v;
+            $("#kazuma_lora_wt_display").text(v);
+            saveSettingsDebounced();
+        });
+        $("#kazuma_lora_wt_2").on("input", (e) => {
+            let v = parseFloat($(e.target).val());
+            extension_settings[extensionName].selectedLoraWt2 = v;
+            $("#kazuma_lora_wt_display_2").text(v);
+            saveSettingsDebounced();
+        });
+        $("#kazuma_lora_wt_3").on("input", (e) => {
+            let v = parseFloat($(e.target).val());
+            extension_settings[extensionName].selectedLoraWt3 = v;
+            $("#kazuma_lora_wt_display_3").text(v);
+            saveSettingsDebounced();
+        });
+        $("#kazuma_lora_wt_4").on("input", (e) => {
+            let v = parseFloat($(e.target).val());
+            extension_settings[extensionName].selectedLoraWt4 = v;
+            $("#kazuma_lora_wt_display_4").text(v);
+            saveSettingsDebounced();
+        });
+
+        // Load settings
         loadSettings();
+
+        // Register message handler for auto-generation
         eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
-        eventSource.on(event_types.IMAGE_SWIPED, onImageSwiped);
 
-        let att = 0; const int = setInterval(() => { if ($("#kazuma_quick_gen").length > 0) { clearInterval(int); return; } createChatButton(); att++; if (att > 5) clearInterval(int); }, 1000);
-        $(document).on("click", "#kazuma_quick_gen", function(e) { e.preventDefault(); e.stopPropagation(); onGeneratePrompt(); });
-    } catch (e) { console.error(e); }
+    } catch (e) {
+        console.error(`[${extensionName}] Initialization failed:`, e);
+    }
 });
-
-// Helpers (Condensed)
-function onMessageReceived(id) { if (!extension_settings[extensionName].enabled || !extension_settings[extensionName].autoGenEnabled) return; const chat = getContext().chat; if (!chat || !chat.length) return; if (chat[chat.length - 1].is_user || chat[chat.length - 1].is_system) return; const aiMsgCount = chat.filter(m => !m.is_user && !m.is_system).length; const freq = parseInt(extension_settings[extensionName].autoGenFreq) || 1; if (aiMsgCount % freq === 0) { console.log(`[${extensionName}] Auto-gen...`); setTimeout(onGeneratePrompt, 500); } }
-function createChatButton() { if ($("#kazuma_quick_gen").length > 0) return; const b = `<div id="kazuma_quick_gen" class="interactable" title="Visualize" style="cursor: pointer; width: 35px; height: 35px; display: flex; align-items: center; justify-content: center; margin-right: 5px; opacity: 0.7;"><i class="fa-solid fa-paintbrush fa-lg"></i></div>`; let t = $("#send_but_sheld"); if (!t.length) t = $("#send_textarea"); if (t.length) { t.attr("id") === "send_textarea" ? t.before(b) : t.prepend(b); } }
-async function onFileSelected(e) { const f=e.target.files[0];if(!f)return;const t=await f.text();try{const j=JSON.parse(t),n=prompt("Name:",f.name.replace(".json",""));if(n){extension_settings[extensionName].savedWorkflows[n]=j;extension_settings[extensionName].currentWorkflowName=n;saveSettingsDebounced();populateWorkflows();}}catch{toastr.error("Invalid JSON");}$(e.target).val('');}
-function showKazumaProgress(text = "Processing...") {
-    $("#kazuma_progress_text").text(text);
-    $("#kazuma_progress_overlay").css("display", "flex");
-}
-
-function hideKazumaProgress() {
-    $("#kazuma_progress_overlay").hide();
-}
-/* --- WORKFLOW CONTEXT MANAGERS --- */
-function getWorkflowState() {
-    const s = extension_settings[extensionName];
-    // Capture all image-related parameters
-    return {
-        selectedModel: s.selectedModel,
-        selectedSampler: s.selectedSampler,
-        steps: s.steps,
-        cfg: s.cfg,
-        denoise: s.denoise,
-        clipSkip: s.clipSkip,
-        imgWidth: s.imgWidth,
-        imgHeight: s.imgHeight,
-        customSeed: s.customSeed,
-        customNegative: s.customNegative,
-        // LoRAs
-        selectedLora: s.selectedLora, selectedLoraWt: s.selectedLoraWt,
-        selectedLora2: s.selectedLora2, selectedLoraWt2: s.selectedLoraWt2,
-        selectedLora3: s.selectedLora3, selectedLoraWt3: s.selectedLoraWt3,
-        selectedLora4: s.selectedLora4, selectedLoraWt4: s.selectedLoraWt4,
-    };
-}
-
-function applyWorkflowState(state) {
-    const s = extension_settings[extensionName];
-    // 1. Update Global Settings
-    Object.assign(s, state);
-
-    // 2. Update UI Elements
-    $("#kazuma_model_list").val(s.selectedModel);
-    $("#kazuma_sampler_list").val(s.selectedSampler);
-
-    updateSliderInput('kazuma_steps', 'kazuma_steps_val', s.steps);
-    updateSliderInput('kazuma_cfg', 'kazuma_cfg_val', s.cfg);
-    updateSliderInput('kazuma_denoise', 'kazuma_denoise_val', s.denoise);
-    updateSliderInput('kazuma_clip', 'kazuma_clip_val', s.clipSkip);
-
-    $("#kazuma_width").val(s.imgWidth);
-    $("#kazuma_height").val(s.imgHeight);
-    $("#kazuma_seed").val(s.customSeed);
-    $("#kazuma_negative").val(s.customNegative);
-
-    // LoRA UI
-    $("#kazuma_lora_list").val(s.selectedLora);
-    $("#kazuma_lora_list_2").val(s.selectedLora2);
-    $("#kazuma_lora_list_3").val(s.selectedLora3);
-    $("#kazuma_lora_list_4").val(s.selectedLora4);
-
-    // LoRA Weights UI
-    $("#kazuma_lora_wt").val(s.selectedLoraWt); $("#kazuma_lora_wt_display").text(s.selectedLoraWt);
-    $("#kazuma_lora_wt_2").val(s.selectedLoraWt2); $("#kazuma_lora_wt_display_2").text(s.selectedLoraWt2);
-    $("#kazuma_lora_wt_3").val(s.selectedLoraWt3); $("#kazuma_lora_wt_display_3").text(s.selectedLoraWt3);
-    $("#kazuma_lora_wt_4").val(s.selectedLoraWt4); $("#kazuma_lora_wt_display_4").text(s.selectedLoraWt4);
-}
-
