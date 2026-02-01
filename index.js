@@ -116,48 +116,80 @@ const defaultSettings = {
     contextMessageCount: 5
 };
 
-// === SCENE EXTRACTION CONFIG ===
-const SCENE_SYSTEM_PROMPT = `You extract scene settings from roleplay conversations as structured JSON for anime background image generation.
+// === TWO-LAYER SCENE EXTRACTION CONFIG ===
 
-Output ONLY valid JSON with these fields:
+// Layer 1: Scene Analysis - Understand the scene conceptually
+const SCENE_ANALYSIS_PROMPT = `Analyze this roleplay conversation and describe the current scene/setting.
+
+Output JSON with these fields:
 {
-  "location": "pick ONE from the LOCATION LIST below",
-  "time_of_day": "one of: morning, day, afternoon, evening, night, dawn, dusk",
-  "weather": "one of: clear, cloudy, rain, snow, fog, storm, wind, none",
-  "mood": "1-3 from MOOD LIST below",
-  "key_elements": "3-6 from ELEMENTS LIST below"
+  "location_type": "what kind of place is this? (e.g., interior of a gothic castle, Japanese high school classroom, dark forest at night)",
+  "architecture": "building style, construction materials, structural features",
+  "atmosphere": "mood, feeling, ambiance (e.g., dark, cozy, tense, peaceful, ominous)",
+  "time": "time of day and lighting conditions",
+  "weather": "weather if outdoors, or 'indoors' if inside",
+  "key_features": "notable visual elements, furniture, objects, environmental details"
 }
 
-LOCATION LIST (pick the closest match):
-indoors: bedroom, living_room, kitchen, bathroom, hallway, library, classroom, office, hospital_room, church, temple, shrine, castle, castle_interior, throne_room, dungeon, prison_cell, basement, attic, warehouse, factory, laboratory, bar, restaurant, cafe, shop, hotel_room, train_interior, spaceship_interior, cockpit, bridge_(ship)
-outdoors: forest, mountain, beach, ocean, lake, river, waterfall, cave, desert, field, meadow, garden, park, cemetery, ruins, city, street, alley, rooftop, balcony, bridge, train_station, harbor, airport, battlefield, arena, campsite, village, farm
-
-MOOD LIST (lighting/atmosphere):
-warm_lighting, dim_lighting, bright, dark, candlelight, moonlight, sunlight, dramatic_lighting, soft_lighting, neon_lights, firelight, torchlight, backlight, volumetric_lighting
-
-ELEMENTS LIST (visual only):
-stone_walls, wooden_floor, marble_floor, carpet, brick_wall, window, door, stairs, fireplace, chandelier, candle, torch, lantern, bookshelf, table, chair, bed, sofa, desk, throne, altar, pillar, column, curtains, tapestry, painting, mirror, clock, fountain, statue, gate, fence, tree, grass, flowers, water, rocks, clouds, moon, stars
-
 RULES:
-- INFER the location from context. "Countess" + "stone halls" + "robed figures" = castle_interior
-- Pick elements that match what's described or implied
-- NO made-up terms, NO character descriptions
+- INFER from context clues (Countess + stone halls = castle, not modern building)
+- Describe in plain English, not tags
+- Focus on VISUAL elements only
+- Be specific about architectural style (gothic, modern, Japanese, etc.)
 
 EXAMPLES:
 1. *The robed woman leads you through stone corridors. "The Countess will see you soon."*
-{"location":"castle_interior","time_of_day":"evening","weather":"none","mood":"dim_lighting, candlelight","key_elements":"stone_walls, torch, door, pillar, tapestry"}
+{"location_type":"interior of a gothic castle","architecture":"medieval stone construction, gothic arches, heavy wooden doors","atmosphere":"dark, ominous, mysterious, candlelit","time":"evening/night","weather":"indoors","key_features":"stone walls, wooden furniture, barred windows, tapestries, torches"}
 
 2. *They walk into the dimly lit library, rain pattering against tall windows*
-{"location":"library","time_of_day":"evening","weather":"rain","mood":"dim_lighting, warm_lighting","key_elements":"bookshelf, window, wooden_floor, chandelier, chair"}`;
+{"location_type":"Victorian mansion library","architecture":"ornate wooden paneling, high ceilings, tall windows","atmosphere":"cozy yet melancholic, warm lighting","time":"evening","weather":"rain","key_features":"floor-to-ceiling bookshelves, reading chairs, fireplace, heavy curtains, chandelier"}`;
 
-const SCENE_TAG_GEN_CONFIG = {
-    temperature: 0.15,
+// Layer 2: Tag Generation - Convert description to actual booru tags
+const TAG_GENERATION_PROMPT = `Convert this scene description into danbooru/booru image tags.
+
+ONLY use tags from these categories:
+
+SETTING TYPE:
+indoors, outdoors, castle, mansion, temple, shrine, church, school, classroom, library, bedroom, living_room, kitchen, bathroom, hallway, dungeon, prison, cave, forest, mountain, beach, ocean, lake, river, city, street, alley, rooftop, balcony, garden, park, ruins, spaceship, laboratory, hospital, office, restaurant, cafe, bar, shop, train_interior, bridge
+
+ARCHITECTURE STYLE:
+gothic_architecture, japanese_architecture, modern_architecture, medieval, victorian, art_deco, futuristic, rustic, ornate, minimalist, ancient, ruins
+
+MATERIALS/SURFACES:
+stone_wall, stone_floor, brick_wall, wooden_floor, marble_floor, tatami, carpet, concrete, metal, glass
+
+LIGHTING:
+candlelight, torchlight, moonlight, sunlight, dim_lighting, bright, dark, dramatic_lighting, soft_lighting, backlight, volumetric_lighting, neon_lights, firelight, lantern
+
+TIME/SKY:
+day, night, morning, evening, sunset, sunrise, dawn, dusk, twilight, blue_sky, night_sky, cloudy_sky, starry_sky, orange_sky
+
+WEATHER:
+rain, snow, fog, mist, storm, wind, clear_sky, overcast
+
+ATMOSPHERE:
+atmospheric, ominous, peaceful, cozy, eerie, mystical, romantic, melancholic, tense, serene
+
+OBJECTS/FURNITURE:
+window, door, stairs, fireplace, chandelier, candle, torch, lantern, bookshelf, table, chair, bed, sofa, desk, throne, altar, pillar, column, curtains, tapestry, painting, mirror, clock, fountain, statue, gate, fence, tree, grass, flowers
+
+Output ONLY comma-separated tags, nothing else. Pick 10-20 tags that best represent the scene.`;
+
+const SCENE_ANALYSIS_CONFIG = {
+    temperature: 0.3,
     top_p: 0.9,
     frequency_penalty: 0,
     presence_penalty: 0,
-    max_tokens: 300,
-    systemPrompt: SCENE_SYSTEM_PROMPT,
+    max_tokens: 400,
     assistantPrefill: '{"'
+};
+
+const TAG_GENERATION_CONFIG = {
+    temperature: 0.2,
+    top_p: 0.9,
+    frequency_penalty: 0,
+    presence_penalty: 0,
+    max_tokens: 200
 };
 
 // === HELPER FUNCTIONS ===
@@ -230,110 +262,45 @@ function buildWorkflowPrompt(positivePrompt) {
 
 // === SCENE EXTRACTION ===
 
-function validateAndRepairSceneState(sceneJson) {
-    const VALID_TIMES = ['morning', 'day', 'afternoon', 'evening', 'night', 'dawn', 'dusk'];
-    const VALID_WEATHER = ['clear', 'cloudy', 'rain', 'snow', 'fog', 'storm', 'wind', 'none'];
-
-    if (!sceneJson.location || typeof sceneJson.location !== 'string') {
-        sceneJson.location = 'indoors';
-    }
-    if (!sceneJson.time_of_day || !VALID_TIMES.includes(sceneJson.time_of_day)) {
-        sceneJson.time_of_day = 'day';
-    }
-    if (!sceneJson.weather || !VALID_WEATHER.includes(sceneJson.weather)) {
-        sceneJson.weather = 'clear';
-    }
-    if (sceneJson.mood && typeof sceneJson.mood !== 'string') {
-        sceneJson.mood = '';
-    }
-    if (sceneJson.key_elements && typeof sceneJson.key_elements !== 'string') {
-        sceneJson.key_elements = '';
-    }
-
-    return sceneJson;
-}
-
-function buildBackgroundPrompt(sceneJson) {
+// Simplified buildBackgroundPrompt - Layer 2 now outputs ready-made tags
+function buildBackgroundPrompt(tagsFromLLM) {
     const parts = [];
 
-    // Environment base tags
+    // Base tags (always included)
     parts.push('no_humans', 'scenery', 'detailed_environment');
-
-    // Composition tags for proper VN background framing
     parts.push('eye_level', 'centered_composition', 'depth_of_field', 'wide_shot');
 
-    // Location
-    const location = sceneJson.location.toLowerCase().replace(/\s+/g, '_');
-    parts.push(location);
-
-    // Key elements (architectural/natural)
-    if (sceneJson.key_elements) {
-        sceneJson.key_elements.split(',').map(t => t.trim().replace(/\s+/g, '_'))
-            .filter(t => t).forEach(t => parts.push(t));
-    }
-
-    // Time of day mappings
-    const TIME_MAPPINGS = {
-        'morning': ['morning', 'sunlight', 'blue_sky'],
-        'day': ['day', 'blue_sky', 'sunlight'],
-        'afternoon': ['afternoon', 'sunlight', 'warm_lighting'],
-        'evening': ['evening', 'orange_sky', 'sunset', 'warm_ambient_lighting'],
-        'night': ['night', 'night_sky', 'moonlight', 'dark'],
-        'dawn': ['dawn', 'sunrise', 'gradient_sky', 'atmospheric_haze'],
-        'dusk': ['dusk', 'twilight', 'purple_sky', 'soft_shadows']
-    };
-    parts.push(...(TIME_MAPPINGS[sceneJson.time_of_day] || ['day']));
-
-    // Weather mappings
-    const WEATHER_MAPPINGS = {
-        'clear': ['clear_sky'],
-        'cloudy': ['cloudy', 'overcast'],
-        'rain': ['rain', 'wet', 'puddle'],
-        'snow': ['snowing', 'snow'],
-        'fog': ['fog', 'mist', 'atmospheric_haze'],
-        'storm': ['storm', 'lightning', 'dark_clouds', 'dramatic_lighting'],
-        'wind': ['wind', 'dynamic_clouds'],
-        'none': []
-    };
-    parts.push(...(WEATHER_MAPPINGS[sceneJson.weather] || []));
-
-    // Mood/lighting from LLM
-    if (sceneJson.mood) {
-        sceneJson.mood.split(',').map(t => t.trim().replace(/\s+/g, '_'))
-            .filter(t => t).forEach(t => parts.push(t));
-    }
+    // Add LLM-generated tags
+    tagsFromLLM.split(',').map(t => t.trim()).filter(t => t).forEach(t => parts.push(t));
 
     // Quality tags (Illustrious)
     parts.push(...ILLUSTRIOUS_QUALITY_TAGS.split(', '));
 
     // Dedupe and join
-    return parts.filter((t, i, arr) => arr.indexOf(t) === i).join(', ');
+    return [...new Set(parts)].join(', ');
 }
 
-async function generateScenePrompt(sceneText) {
+// Helper function to call the LLM API
+async function callSceneLLM(systemPrompt, userContent, config, useAssistantPrefill = false) {
     const s = extension_settings[extensionName];
 
-    if (!s.tagApiEndpoint || !s.tagModel) {
-        throw new Error("Scene Extraction API not configured. Please set endpoint and model.");
-    }
-
     const messages = [
-        { role: 'system', content: SCENE_TAG_GEN_CONFIG.systemPrompt },
-        { role: 'user', content: sceneText }
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userContent }
     ];
 
-    if (SCENE_TAG_GEN_CONFIG.assistantPrefill) {
-        messages.push({ role: 'assistant', content: SCENE_TAG_GEN_CONFIG.assistantPrefill });
+    if (useAssistantPrefill && config.assistantPrefill) {
+        messages.push({ role: 'assistant', content: config.assistantPrefill });
     }
 
     const requestBody = {
         model: s.tagModel,
         messages: messages,
-        max_tokens: SCENE_TAG_GEN_CONFIG.max_tokens,
-        temperature: SCENE_TAG_GEN_CONFIG.temperature,
-        top_p: SCENE_TAG_GEN_CONFIG.top_p,
-        frequency_penalty: SCENE_TAG_GEN_CONFIG.frequency_penalty,
-        presence_penalty: SCENE_TAG_GEN_CONFIG.presence_penalty
+        max_tokens: config.max_tokens,
+        temperature: config.temperature,
+        top_p: config.top_p,
+        frequency_penalty: config.frequency_penalty,
+        presence_penalty: config.presence_penalty
     };
 
     const headers = { 'Content-Type': 'application/json' };
@@ -362,34 +329,75 @@ async function generateScenePrompt(sceneText) {
     result = result.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
     result = result.replace(/<\/?think>/gi, '').trim();
 
-    // Prepend assistant prefill if needed
-    if (SCENE_TAG_GEN_CONFIG.assistantPrefill && !result.trim().startsWith('{')) {
-        result = SCENE_TAG_GEN_CONFIG.assistantPrefill + result;
+    return result;
+}
+
+async function generateScenePrompt(sceneText) {
+    const s = extension_settings[extensionName];
+
+    if (!s.tagApiEndpoint || !s.tagModel) {
+        throw new Error("Scene Extraction API not configured. Please set endpoint and model.");
     }
 
-    // Extract JSON
-    let jsonStr = result;
-    const jsonMatch = result.match(/```(?:json)?\s*([\s\S]*?)```/);
+    // === LAYER 1: Scene Analysis ===
+    console.log(`[${extensionName}] Layer 1: Analyzing scene...`);
+    let analysisResult = await callSceneLLM(
+        SCENE_ANALYSIS_PROMPT,
+        sceneText,
+        SCENE_ANALYSIS_CONFIG,
+        true // use assistant prefill for JSON
+    );
+
+    // Prepend assistant prefill if needed for JSON parsing
+    if (SCENE_ANALYSIS_CONFIG.assistantPrefill && !analysisResult.trim().startsWith('{')) {
+        analysisResult = SCENE_ANALYSIS_CONFIG.assistantPrefill + analysisResult;
+    }
+
+    // Extract JSON from Layer 1
+    let jsonStr = analysisResult;
+    const jsonMatch = analysisResult.match(/```(?:json)?\s*([\s\S]*?)```/);
     if (jsonMatch) {
         jsonStr = jsonMatch[1].trim();
     } else {
-        const objMatch = result.match(/\{[\s\S]*?\}/);
+        const objMatch = analysisResult.match(/\{[\s\S]*?\}/);
         if (objMatch) jsonStr = objMatch[0];
     }
 
-    let sceneJson;
+    let sceneAnalysis;
     try {
-        sceneJson = JSON.parse(jsonStr);
+        sceneAnalysis = JSON.parse(jsonStr);
     } catch (e) {
-        console.error(`[${extensionName}] Failed to parse scene JSON: ${jsonStr}`);
-        sceneJson = { location: 'indoors', time_of_day: 'day', weather: 'clear', mood: '', key_elements: '' };
+        console.error(`[${extensionName}] Layer 1 JSON parse failed: ${jsonStr}`);
+        // Fallback: use raw text as description
+        sceneAnalysis = {
+            location_type: "unknown location",
+            architecture: "unspecified",
+            atmosphere: "neutral",
+            time: "day",
+            weather: "clear",
+            key_features: "unspecified"
+        };
     }
 
-    sceneJson = validateAndRepairSceneState(sceneJson);
-    console.log(`[${extensionName}] Extracted scene:`, sceneJson);
+    console.log(`[${extensionName}] Layer 1 Output:`, sceneAnalysis);
 
-    const prompt = buildBackgroundPrompt(sceneJson);
-    console.log(`[${extensionName}] Generated prompt: ${prompt}`);
+    // === LAYER 2: Tag Generation ===
+    console.log(`[${extensionName}] Layer 2: Generating tags...`);
+    const tagPrompt = `Scene description:
+${JSON.stringify(sceneAnalysis, null, 2)}`;
+
+    const tags = await callSceneLLM(
+        TAG_GENERATION_PROMPT,
+        tagPrompt,
+        TAG_GENERATION_CONFIG,
+        false // no assistant prefill for tag output
+    );
+
+    console.log(`[${extensionName}] Layer 2 Output (raw tags): ${tags}`);
+
+    // Build final prompt with base tags + LLM tags + quality tags
+    const prompt = buildBackgroundPrompt(tags);
+    console.log(`[${extensionName}] Final prompt: ${prompt}`);
 
     return prompt;
 }
