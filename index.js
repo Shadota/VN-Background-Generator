@@ -121,7 +121,7 @@ const defaultSettings = {
 // Layer 1: Scene Analysis - Understand the scene conceptually
 const SCENE_ANALYSIS_PROMPT = `Analyze this roleplay conversation and describe the current scene/setting.
 
-Output JSON with these fields:
+Output ONLY a JSON object with these fields (no explanation, no commentary):
 {
   "location_type": "what kind of place is this? (e.g., interior of a gothic castle, Japanese high school classroom, dark forest at night)",
   "architecture": "building style, construction materials, structural features",
@@ -173,15 +173,14 @@ atmospheric, ominous, peaceful, cozy, eerie, mystical, romantic, melancholic, te
 OBJECTS/FURNITURE:
 window, door, stairs, fireplace, chandelier, candle, torch, lantern, bookshelf, table, chair, bed, sofa, desk, throne, altar, pillar, column, curtains, tapestry, painting, mirror, clock, fountain, statue, gate, fence, tree, grass, flowers
 
-Output ONLY comma-separated tags, nothing else. Pick 10-20 tags that best represent the scene.`;
+IMPORTANT: Output ONLY comma-separated tags. No explanations, no reasoning, no commentary. Just tags separated by commas. Pick 10-20 tags.`;
 
 const SCENE_ANALYSIS_CONFIG = {
     temperature: 0.3,
     top_p: 0.9,
     frequency_penalty: 0,
     presence_penalty: 0,
-    max_tokens: 400
-    // NO assistantPrefill - causes issues with thinking models
+    max_tokens: 800 // needs room for thinking + JSON output
 };
 
 const TAG_GENERATION_CONFIG = {
@@ -403,18 +402,20 @@ async function generateScenePrompt(sceneText) {
     }
 
     let sceneAnalysis;
+    let layer1Failed = false;
     try {
         sceneAnalysis = JSON.parse(jsonStr);
     } catch (e) {
         console.error(`[${extensionName}] Layer 1 JSON parse failed: ${jsonStr}`);
-        sceneAnalysis = {
-            location_type: "unknown location",
-            architecture: "unspecified",
-            atmosphere: "neutral",
-            time: "day",
-            weather: "clear",
-            key_features: "unspecified"
-        };
+        layer1Failed = true;
+        sceneAnalysis = null;
+    }
+
+    // If Layer 1 failed, skip Layer 2 and use safe default tags
+    if (layer1Failed || !sceneAnalysis || !sceneAnalysis.location_type) {
+        console.warn(`[${extensionName}] Layer 1 failed, using default tags`);
+        const defaultTags = 'indoors, room, window, soft_lighting, cozy, atmospheric';
+        return buildBackgroundPrompt(defaultTags);
     }
 
     console.log(`[${extensionName}] Layer 1 Output:`, sceneAnalysis);
