@@ -176,16 +176,16 @@ window, door, stairs, fireplace, chandelier, candle, torch, lantern, bookshelf, 
 IMPORTANT: Output ONLY comma-separated tags. No explanations, no reasoning, no commentary. Just tags separated by commas. Pick 10-20 tags.`;
 
 const SCENE_ANALYSIS_CONFIG = {
-    temperature: 0.3,
-    top_p: 0.9,
+    temperature: 1.0,
+    top_p: 0.95,
     frequency_penalty: 0,
     presence_penalty: 0,
     max_tokens: 800 // needs room for thinking + JSON output
 };
 
 const TAG_GENERATION_CONFIG = {
-    temperature: 0.2,
-    top_p: 0.9,
+    temperature: 1.0,
+    top_p: 0.95,
     frequency_penalty: 0,
     presence_penalty: 0,
     max_tokens: 200
